@@ -1,3 +1,4 @@
+
 const express = require('express');
 const webPush = require('web-push');
 const bodyParser = require('body-parser');
@@ -11,7 +12,8 @@ const { Server } = require('socket.io'); // NEW
 
 const app = express();
 
-// WRAP EXPRESS IN HTTP SERVER
+
+
 const server = http.createServer(app);
 
 // SETUP SOCKET.IO
