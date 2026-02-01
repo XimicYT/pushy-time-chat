@@ -24,12 +24,38 @@ function generatePhoneNumber() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// Helper: Ensure Contact Exists (Auto-Add)
+async function ensureContactExists(owner, contact, defaultName) {
+    // Check if relationship already exists
+    const { data } = await supabase.from('contacts')
+        .select('id')
+        .match({ owner_number: owner, contact_number: contact })
+        .single();
+    
+    if (!data) {
+        // If not, try to fetch the contact's actual username to use as a nickname
+        const { data: profile } = await supabase.from('profiles')
+            .select('username')
+            .eq('phone_number', contact)
+            .single();
+            
+        const nameToUse = profile ? profile.username : defaultName;
+
+        // Insert new contact entry
+        await supabase.from('contacts').insert({
+            owner_number: owner,
+            contact_number: contact,
+            nickname: nameToUse
+        });
+    }
+}
+
 // 1. REGISTER / LOGIN
 app.post('/register', async (req, res) => {
     const { subscription, username } = req.body;
-    let { existingNumber } = req.body; // Logic to recover account if they know their number
+    let { existingNumber } = req.body;
 
-    // If user claims to have a number, try to update their push sub
+    // If recovering account
     if (existingNumber) {
         const { data } = await supabase.from('profiles').select('*').eq('phone_number', existingNumber).single();
         if (data) {
@@ -38,11 +64,10 @@ app.post('/register', async (req, res) => {
         }
     }
 
-    // Otherwise, create new
+    // New Registration
     let phoneNumber = generatePhoneNumber();
     let unique = false;
     
-    // Retry loop to ensure unique number
     while (!unique) {
         const { data } = await supabase.from('profiles').select('phone_number').eq('phone_number', phoneNumber);
         if (!data || data.length === 0) unique = true;
@@ -59,18 +84,38 @@ app.post('/register', async (req, res) => {
     res.json({ phoneNumber: data.phone_number, username: data.username, restored: false });
 });
 
-// 2. SEND MESSAGE
+// 2. SEND MESSAGE (Updated with Block Check & Auto-Add)
 app.post('/send-message', async (req, res) => {
     let { senderNumber, receiverNumber, body } = req.body;
 
-    // Save to DB
+    // A. CHECK BLOCK STATUS
+    // Did the receiver block the sender?
+    const { data: blockData } = await supabase
+        .from('blocks')
+        .select('*')
+        .eq('blocker_number', receiverNumber)
+        .eq('blocked_number', senderNumber)
+        .single();
+
+    if (blockData) {
+        // Soft fail: Return success to sender so they don't know, but do not save/send.
+        return res.json({ success: true, status: 'blocked' }); 
+    }
+
+    // B. AUTO-ADD CONTACTS (Bidirectional)
+    // 1. Ensure Sender has Receiver in contacts
+    await ensureContactExists(senderNumber, receiverNumber, "New Contact");
+    // 2. Ensure Receiver has Sender in contacts (so they see the message immediately)
+    await ensureContactExists(receiverNumber, senderNumber, "New Chat");
+
+    // C. SAVE MESSAGE
     await supabase.from('messages').insert({
         sender_number: senderNumber,
         receiver_number: receiverNumber,
         body: filter.clean(body)
     });
 
-    // Send Push Notification
+    // D. SEND PUSH NOTIFICATION
     const { data: receiver } = await supabase
         .from('profiles')
         .select('push_sub')
@@ -92,7 +137,6 @@ app.post('/send-message', async (req, res) => {
 
 // 3. GET MESSAGES (Sync)
 app.get('/messages/:myNumber', async (req, res) => {
-    // Fetch last 500 messages involving this user
     const { data } = await supabase
         .from('messages')
         .select('*')
@@ -102,11 +146,10 @@ app.get('/messages/:myNumber', async (req, res) => {
     res.json(data);
 });
 
-// 4. ADD CONTACT
+// 4. ADD CONTACT (Manual)
 app.post('/contacts/add', async (req, res) => {
     const { ownerNumber, contactNumber, nickname } = req.body;
 
-    // Check if user exists
     const { data: user } = await supabase.from('profiles').select('id').eq('phone_number', contactNumber).single();
     if (!user) return res.status(404).json({ error: "Number not found. User must register first." });
 
@@ -130,6 +173,20 @@ app.get('/contacts/:myNumber', async (req, res) => {
 app.post('/contacts/delete', async (req, res) => {
     const { id } = req.body;
     await supabase.from('contacts').delete().eq('id', id);
+    res.json({ success: true });
+});
+
+// 7. BLOCK USER (New)
+app.post('/contacts/block', async (req, res) => {
+    const { ownerNumber, blockedNumber } = req.body;
+    
+    // Upsert ensures we don't error if they are already blocked
+    const { error } = await supabase.from('blocks').upsert({ 
+        blocker_number: ownerNumber, 
+        blocked_number: blockedNumber 
+    }, { onConflict: 'blocker_number, blocked_number' });
+
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
 });
 
