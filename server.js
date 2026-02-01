@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 
-// --- ENV VARS ---
+// --- CONFIG ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -19,22 +19,30 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 webPush.setVapidDetails('mailto:admin@txtapp.com', publicVapidKey, privateVapidKey);
 const filter = new Filter();
 
-// Helper
+// Helper: Generate Random 6-Digit Number
 function generatePhoneNumber() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// 1. REGISTER
+// 1. REGISTER / LOGIN
 app.post('/register', async (req, res) => {
     const { subscription, username } = req.body;
-    
-    // Cleanup old sub
-    if (subscription?.endpoint) {
-        await supabase.from('profiles').delete().eq('push_sub->>endpoint', subscription.endpoint);
+    let { existingNumber } = req.body; // Logic to recover account if they know their number
+
+    // If user claims to have a number, try to update their push sub
+    if (existingNumber) {
+        const { data } = await supabase.from('profiles').select('*').eq('phone_number', existingNumber).single();
+        if (data) {
+            await supabase.from('profiles').update({ push_sub: subscription }).eq('phone_number', existingNumber);
+            return res.json({ phoneNumber: data.phone_number, username: data.username, restored: true });
+        }
     }
 
+    // Otherwise, create new
     let phoneNumber = generatePhoneNumber();
     let unique = false;
+    
+    // Retry loop to ensure unique number
     while (!unique) {
         const { data } = await supabase.from('profiles').select('phone_number').eq('phone_number', phoneNumber);
         if (!data || data.length === 0) unique = true;
@@ -48,7 +56,7 @@ app.post('/register', async (req, res) => {
     }).select().single();
 
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ phoneNumber: data.phone_number, username: data.username });
+    res.json({ phoneNumber: data.phone_number, username: data.username, restored: false });
 });
 
 // 2. SEND MESSAGE
@@ -62,7 +70,7 @@ app.post('/send-message', async (req, res) => {
         body: filter.clean(body)
     });
 
-    // Lookup Receiver
+    // Send Push Notification
     const { data: receiver } = await supabase
         .from('profiles')
         .select('push_sub')
@@ -73,37 +81,34 @@ app.post('/send-message', async (req, res) => {
         try {
             await webPush.sendNotification(receiver.push_sub, JSON.stringify({
                 title: `New Message`,
-                body: filter.clean(body)
+                body: filter.clean(body),
+                sender: senderNumber 
             }));
-        } catch (e) { console.log("Push failed", e); }
+        } catch (e) { console.error("Push Error:", e); }
     }
 
     res.json({ success: true });
 });
 
-// 3. GET MESSAGES
+// 3. GET MESSAGES (Sync)
 app.get('/messages/:myNumber', async (req, res) => {
+    // Fetch last 500 messages involving this user
     const { data } = await supabase
         .from('messages')
         .select('*')
         .or(`sender_number.eq.${req.params.myNumber},receiver_number.eq.${req.params.myNumber}`)
         .order('timestamp', { ascending: true })
-        .limit(100);
+        .limit(500);
     res.json(data);
 });
 
-// --- NEW: CONTACT FEATURES ---
-
-// 4. ADD CONTACT (With Validation)
+// 4. ADD CONTACT
 app.post('/contacts/add', async (req, res) => {
     const { ownerNumber, contactNumber, nickname } = req.body;
 
-    // Verify contact exists in profiles
+    // Check if user exists
     const { data: user } = await supabase.from('profiles').select('id').eq('phone_number', contactNumber).single();
-    
-    if (!user) {
-        return res.status(404).json({ error: "This number does not exist or account is deactivated." });
-    }
+    if (!user) return res.status(404).json({ error: "Number not found. User must register first." });
 
     const { error } = await supabase.from('contacts').insert({
         owner_number: ownerNumber,
@@ -121,11 +126,10 @@ app.get('/contacts/:myNumber', async (req, res) => {
     res.json(data);
 });
 
-// 6. RENAME CONTACT
-app.post('/contacts/rename', async (req, res) => {
-    const { id, newName } = req.body;
-    const { error } = await supabase.from('contacts').update({ nickname: newName }).eq('id', id);
-    if (error) return res.status(500).json({ error: error.message });
+// 6. DELETE CONTACT
+app.post('/contacts/delete', async (req, res) => {
+    const { id } = req.body;
+    await supabase.from('contacts').delete().eq('id', id);
     res.json({ success: true });
 });
 
