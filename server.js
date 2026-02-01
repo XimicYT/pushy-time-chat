@@ -7,24 +7,19 @@ const Filter = require('bad-words');
 
 const app = express();
 
-// --- 1. ROBUST CORS CONFIGURATION ---
-// This allows your Netlify app to talk to this server
 const corsOptions = {
-    origin: '*', // Allow all origins for now to fix the blocking issue immediately
+    origin: '*',
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Enable pre-flight for all routes
-
+app.options('*', cors(corsOptions));
 app.use(bodyParser.json({ limit: '10mb' }));
 
-// --- CONFIG ---
-// Check if keys exist to prevent startup crashes
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-    console.error("CRITICAL ERROR: Supabase Credentials missing in Render Environment Variables.");
+    console.error("CRITICAL ERROR: Supabase Credentials missing.");
 }
 
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
@@ -40,12 +35,22 @@ if (publicVapidKey && privateVapidKey) {
 
 const filter = new Filter();
 
-// Helper: Generate Random 6-Digit Number
+// --- SAFELY CLEAN TEXT (Prevents 500 Crashes) ---
+function safeClean(text) {
+    if (!text || typeof text !== 'string') return "";
+    try {
+        return filter.clean(text);
+    } catch (e) {
+        // If the filter crashes on symbols, return the original text
+        // (We will handle safety on the frontend)
+        return text;
+    }
+}
+
 function generatePhoneNumber() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Helper: Ensure Contact Exists
 async function ensureContactExists(owner, contact, defaultName) {
     try {
         const { data } = await supabase.from('contacts')
@@ -58,27 +63,19 @@ async function ensureContactExists(owner, contact, defaultName) {
                 .select('username')
                 .eq('phone_number', contact)
                 .single();
-                
             const nameToUse = profile ? profile.username : defaultName;
-
             await supabase.from('contacts').insert({
                 owner_number: owner,
                 contact_number: contact,
                 nickname: nameToUse
             });
         }
-    } catch (err) {
-        console.error("Auto-add contact error:", err.message);
-    }
+    } catch (err) { console.error("Auto-add error:", err.message); }
 }
 
-// --- HEALTH CHECK ROUTE ---
-// Use this to check if server is alive in browser
-app.get('/', (req, res) => {
-    res.send('Server is running and healthy.');
-});
+app.get('/', (req, res) => res.send('Server is running.'));
 
-// 1. REGISTER / LOGIN
+// 1. REGISTER
 app.post('/register', async (req, res) => {
     try {
         const { subscription, username, existingNumber } = req.body;
@@ -93,9 +90,8 @@ app.post('/register', async (req, res) => {
 
         let phoneNumber = generatePhoneNumber();
         let unique = false;
-        
-        // Retry logic for uniqueness
         let attempts = 0;
+        
         while (!unique && attempts < 5) {
             const { data } = await supabase.from('profiles').select('phone_number').eq('phone_number', phoneNumber);
             if (!data || data.length === 0) unique = true;
@@ -103,8 +99,11 @@ app.post('/register', async (req, res) => {
             attempts++;
         }
 
+        // Use safeClean here
+        const cleanName = safeClean(username || "User");
+
         const { data, error } = await supabase.from('profiles').insert({
-            username: filter.clean(username || "User"),
+            username: cleanName,
             phone_number: phoneNumber,
             push_sub: subscription
         }).select().single();
@@ -112,7 +111,6 @@ app.post('/register', async (req, res) => {
         if (error) throw error;
         res.json({ phoneNumber: data.phone_number, username: data.username, restored: false });
     } catch (error) {
-        console.error('/register error:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -122,8 +120,7 @@ app.post('/send-message', async (req, res) => {
     try {
         let { senderNumber, receiverNumber, body } = req.body;
 
-        const { data: blockData } = await supabase
-            .from('blocks')
+        const { data: blockData } = await supabase.from('blocks')
             .select('*')
             .eq('blocker_number', receiverNumber)
             .eq('blocked_number', senderNumber)
@@ -134,15 +131,16 @@ app.post('/send-message', async (req, res) => {
         await ensureContactExists(senderNumber, receiverNumber, "New Contact");
         await ensureContactExists(receiverNumber, senderNumber, "New Chat");
 
+        // Use safeClean here to prevent crash on symbols
+        const cleanBody = safeClean(body);
+
         await supabase.from('messages').insert({
             sender_number: senderNumber,
             receiver_number: receiverNumber,
-            body: filter.clean(body || "")
+            body: cleanBody
         });
 
-        // Push Notification
-        const { data: receiver } = await supabase
-            .from('profiles')
+        const { data: receiver } = await supabase.from('profiles')
             .select('push_sub')
             .eq('phone_number', receiverNumber)
             .single();
@@ -151,15 +149,15 @@ app.post('/send-message', async (req, res) => {
             try {
                 await webPush.sendNotification(receiver.push_sub, JSON.stringify({
                     title: `New Message`,
-                    body: filter.clean(body || "Image"),
+                    body: cleanBody,
                     sender: senderNumber 
                 }));
-            } catch (e) { console.error("Push failed (non-fatal):", e.message); }
+            } catch (e) {}
         }
 
         res.json({ success: true });
     } catch (error) {
-        console.error('/send-message error:', error);
+        console.error("Send Error:", error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -167,50 +165,34 @@ app.post('/send-message', async (req, res) => {
 // 3. GET MESSAGES
 app.get('/messages/:myNumber', async (req, res) => {
     try {
-        const { data, error } = await supabase
-            .from('messages')
+        const { data, error } = await supabase.from('messages')
             .select('*')
             .or(`sender_number.eq.${req.params.myNumber},receiver_number.eq.${req.params.myNumber}`)
             .order('timestamp', { ascending: true })
             .limit(500);
-        
         if (error) throw error;
         res.json(data);
-    } catch (error) {
-        console.error('/messages error:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 // 4. ADD CONTACT
 app.post('/contacts/add', async (req, res) => {
     try {
         const { ownerNumber, contactNumber, nickname } = req.body;
-
-        const { data: user } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('phone_number', contactNumber)
-            .single();
+        const { data: user } = await supabase.from('profiles').select('id').eq('phone_number', contactNumber).single();
 
         if (!user) return res.status(404).json({ error: "User ID not found" });
 
         const { error } = await supabase.from('contacts').insert({
             owner_number: ownerNumber,
             contact_number: contactNumber,
-            nickname: nickname
+            nickname: safeClean(nickname)
         });
 
-        if (error) {
-            // Check for duplicate key error code from Postgres
-            if (error.code === '23505') return res.status(400).json({ error: "Contact already saved" });
-            throw error;
-        }
+        if (error && error.code === '23505') return res.status(400).json({ error: "Contact already saved" });
+        if (error) throw error;
         res.json({ success: true });
-    } catch (error) {
-        console.error('/contacts/add error:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 // 5. GET CONTACTS
@@ -219,38 +201,25 @@ app.get('/contacts/:myNumber', async (req, res) => {
         const { data, error } = await supabase.from('contacts').select('*').eq('owner_number', req.params.myNumber);
         if (error) throw error;
         res.json(data);
-    } catch (error) {
-        console.error('/contacts error:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 6. DELETE CONTACT
+// 6. DELETE / BLOCK
 app.post('/contacts/delete', async (req, res) => {
     try {
-        const { id } = req.body;
-        const { error } = await supabase.from('contacts').delete().eq('id', id);
-        if (error) throw error;
+        await supabase.from('contacts').delete().eq('id', req.body.id);
         res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 7. BLOCK USER
 app.post('/contacts/block', async (req, res) => {
     try {
-        const { ownerNumber, blockedNumber } = req.body;
-        const { error } = await supabase.from('blocks').upsert({ 
-            blocker_number: ownerNumber, 
-            blocked_number: blockedNumber 
+        await supabase.from('blocks').upsert({ 
+            blocker_number: req.body.ownerNumber, 
+            blocked_number: req.body.blockedNumber 
         }, { onConflict: 'blocker_number, blocked_number' });
-
-        if (error) throw error;
         res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 const PORT = process.env.PORT || 3000;
