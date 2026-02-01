@@ -4,7 +4,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const Filter = require('bad-words');
-const bcrypt = require('bcrypt'); // New security package
+const bcrypt = require('bcrypt');
 
 const app = express();
 
@@ -64,9 +64,10 @@ async function ensureContactExists(owner, contact, defaultName) {
     } catch (err) { console.error("Auto-add error:", err.message); }
 }
 
-app.get('/', (req, res) => res.send('Server is running.'));
+// 1. HEALTH CHECK (Used by frontend to wait for connection)
+app.get('/', (req, res) => res.json({ status: 'online' }));
 
-// 1. REGISTER (Updated with Password)
+// 2. REGISTER
 app.post('/register', async (req, res) => {
     try {
         const { subscription, username, password } = req.body;
@@ -86,12 +87,11 @@ app.post('/register', async (req, res) => {
             attempts++;
         }
 
-        // HASH THE PASSWORD
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
         const cleanName = safeClean(username || "User");
 
+        // Note: We don't enforce unique usernames, but it helps for login if they are.
         const { data, error } = await supabase.from('profiles').insert({
             username: cleanName,
             phone_number: phoneNumber,
@@ -106,39 +106,43 @@ app.post('/register', async (req, res) => {
     }
 });
 
-// 2. LOGIN (New Route)
+// 3. LOGIN (Updated for Username OR ID)
 app.post('/login', async (req, res) => {
     try {
-        const { phoneNumber, password, subscription } = req.body;
+        const { identifier, password, subscription } = req.body;
 
-        const { data: user } = await supabase.from('profiles')
-            .select('*')
-            .eq('phone_number', phoneNumber)
-            .single();
+        // Determine if input is an ID (6 digits) or a Username
+        let query = supabase.from('profiles').select('*');
+        if (/^\d{6}$/.test(identifier)) {
+            query = query.eq('phone_number', identifier);
+        } else {
+            // Case-insensitive match for username would be better, but we'll stick to exact match 
+            // for simplicity unless you added the Citext extension to Supabase.
+            query = query.eq('username', identifier);
+        }
+
+        const { data: user } = await query.single();
 
         if (!user) return res.status(404).json({ error: "User not found" });
 
-        // VERIFY PASSWORD
         if (!user.password_hash) {
-            // Legacy account without password
-            return res.status(403).json({ error: "This account is too old and has no password." });
+            return res.status(403).json({ error: "Account too old. No password set." });
         }
 
         const validPass = await bcrypt.compare(password, user.password_hash);
         if (!validPass) return res.status(401).json({ error: "Incorrect password" });
 
-        // Update Push Subscription on Login
         if (subscription) {
-            await supabase.from('profiles').update({ push_sub: subscription }).eq('phone_number', phoneNumber);
+            await supabase.from('profiles').update({ push_sub: subscription }).eq('phone_number', user.phone_number);
         }
 
         res.json({ phoneNumber: user.phone_number, username: user.username });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: "Login failed or duplicate username." });
     }
 });
 
-// 3. SEND MESSAGE
+// 4. SEND MESSAGE
 app.post('/send-message', async (req, res) => {
     try {
         let { senderNumber, receiverNumber, body } = req.body;
@@ -181,7 +185,6 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// 4. GET MESSAGES
 app.get('/messages/:myNumber', async (req, res) => {
     try {
         const { data, error } = await supabase.from('messages')
@@ -194,7 +197,6 @@ app.get('/messages/:myNumber', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 5. CONTACT ROUTES
 app.post('/contacts/add', async (req, res) => {
     try {
         const { ownerNumber, contactNumber, nickname } = req.body;
