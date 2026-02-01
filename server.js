@@ -4,6 +4,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const Filter = require('bad-words');
+const bcrypt = require('bcrypt'); // New security package
 
 const app = express();
 
@@ -24,10 +25,7 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 if (publicVapidKey && privateVapidKey) {
     webPush.setVapidDetails('mailto:admin@txtapp.com', publicVapidKey, privateVapidKey);
@@ -35,16 +33,9 @@ if (publicVapidKey && privateVapidKey) {
 
 const filter = new Filter();
 
-// --- SAFELY CLEAN TEXT (Prevents 500 Crashes) ---
 function safeClean(text) {
     if (!text || typeof text !== 'string') return "";
-    try {
-        return filter.clean(text);
-    } catch (e) {
-        // If the filter crashes on symbols, return the original text
-        // (We will handle safety on the frontend)
-        return text;
-    }
+    try { return filter.clean(text); } catch (e) { return text; }
 }
 
 function generatePhoneNumber() {
@@ -75,17 +66,13 @@ async function ensureContactExists(owner, contact, defaultName) {
 
 app.get('/', (req, res) => res.send('Server is running.'));
 
-// 1. REGISTER
+// 1. REGISTER (Updated with Password)
 app.post('/register', async (req, res) => {
     try {
-        const { subscription, username, existingNumber } = req.body;
-
-        if (existingNumber) {
-            const { data } = await supabase.from('profiles').select('*').eq('phone_number', existingNumber).single();
-            if (data) {
-                await supabase.from('profiles').update({ push_sub: subscription }).eq('phone_number', existingNumber);
-                return res.json({ phoneNumber: data.phone_number, username: data.username, restored: true });
-            }
+        const { subscription, username, password } = req.body;
+        
+        if (!password || password.length < 6) {
+            return res.status(400).json({ error: "Password must be at least 6 characters" });
         }
 
         let phoneNumber = generatePhoneNumber();
@@ -99,27 +86,62 @@ app.post('/register', async (req, res) => {
             attempts++;
         }
 
-        // Use safeClean here
+        // HASH THE PASSWORD
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
         const cleanName = safeClean(username || "User");
 
         const { data, error } = await supabase.from('profiles').insert({
             username: cleanName,
             phone_number: phoneNumber,
-            push_sub: subscription
+            push_sub: subscription,
+            password_hash: hashedPassword
         }).select().single();
 
         if (error) throw error;
-        res.json({ phoneNumber: data.phone_number, username: data.username, restored: false });
+        res.json({ phoneNumber: data.phone_number, username: data.username });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// 2. SEND MESSAGE
+// 2. LOGIN (New Route)
+app.post('/login', async (req, res) => {
+    try {
+        const { phoneNumber, password, subscription } = req.body;
+
+        const { data: user } = await supabase.from('profiles')
+            .select('*')
+            .eq('phone_number', phoneNumber)
+            .single();
+
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        // VERIFY PASSWORD
+        if (!user.password_hash) {
+            // Legacy account without password
+            return res.status(403).json({ error: "This account is too old and has no password." });
+        }
+
+        const validPass = await bcrypt.compare(password, user.password_hash);
+        if (!validPass) return res.status(401).json({ error: "Incorrect password" });
+
+        // Update Push Subscription on Login
+        if (subscription) {
+            await supabase.from('profiles').update({ push_sub: subscription }).eq('phone_number', phoneNumber);
+        }
+
+        res.json({ phoneNumber: user.phone_number, username: user.username });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 3. SEND MESSAGE
 app.post('/send-message', async (req, res) => {
     try {
         let { senderNumber, receiverNumber, body } = req.body;
-
         const { data: blockData } = await supabase.from('blocks')
             .select('*')
             .eq('blocker_number', receiverNumber)
@@ -131,7 +153,6 @@ app.post('/send-message', async (req, res) => {
         await ensureContactExists(senderNumber, receiverNumber, "New Contact");
         await ensureContactExists(receiverNumber, senderNumber, "New Chat");
 
-        // Use safeClean here to prevent crash on symbols
         const cleanBody = safeClean(body);
 
         await supabase.from('messages').insert({
@@ -154,15 +175,13 @@ app.post('/send-message', async (req, res) => {
                 }));
             } catch (e) {}
         }
-
         res.json({ success: true });
     } catch (error) {
-        console.error("Send Error:", error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// 3. GET MESSAGES
+// 4. GET MESSAGES
 app.get('/messages/:myNumber', async (req, res) => {
     try {
         const { data, error } = await supabase.from('messages')
@@ -175,7 +194,7 @@ app.get('/messages/:myNumber', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 4. ADD CONTACT
+// 5. CONTACT ROUTES
 app.post('/contacts/add', async (req, res) => {
     try {
         const { ownerNumber, contactNumber, nickname } = req.body;
@@ -195,7 +214,6 @@ app.post('/contacts/add', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 5. GET CONTACTS
 app.get('/contacts/:myNumber', async (req, res) => {
     try {
         const { data, error } = await supabase.from('contacts').select('*').eq('owner_number', req.params.myNumber);
@@ -204,7 +222,6 @@ app.get('/contacts/:myNumber', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 6. DELETE / BLOCK
 app.post('/contacts/delete', async (req, res) => {
     try {
         await supabase.from('contacts').delete().eq('id', req.body.id);
