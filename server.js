@@ -5,8 +5,21 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const Filter = require('bad-words');
 const bcrypt = require('bcrypt');
+const http = require('http'); // NEW
+const { Server } = require('socket.io'); // NEW
 
 const app = express();
+
+// WRAP EXPRESS IN HTTP SERVER
+const server = http.createServer(app);
+
+// SETUP SOCKET.IO
+const io = new Server(server, {
+    cors: {
+        origin: '*',
+        methods: ["GET", "POST"]
+    }
+});
 
 const corsOptions = {
     origin: '*',
@@ -18,6 +31,22 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(bodyParser.json({ limit: '10mb' }));
+
+// --- SOCKET TRACKING ---
+const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
+
+io.on('connection', (socket) => {
+    // When a user opens the app, they send their phone number
+    socket.on('join', (phoneNumber) => {
+        onlineUsers.set(phoneNumber, socket.id);
+        console.log(`User ${phoneNumber} connected on socket ${socket.id}`);
+    });
+
+    socket.on('disconnect', () => {
+        // Optional: clean up map (complex to do perfectly without looping, strictly not required for MVP)
+    });
+});
+// -----------------------
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
     console.error("CRITICAL ERROR: Supabase Credentials missing.");
@@ -64,7 +93,7 @@ async function ensureContactExists(owner, contact, defaultName) {
     } catch (err) { console.error("Auto-add error:", err.message); }
 }
 
-// 1. HEALTH CHECK (Used by frontend to wait for connection)
+// 1. HEALTH CHECK
 app.get('/', (req, res) => res.json({ status: 'online' }));
 
 // 2. REGISTER
@@ -91,7 +120,6 @@ app.post('/register', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
         const cleanName = safeClean(username || "User");
 
-        // Note: We don't enforce unique usernames, but it helps for login if they are.
         const { data, error } = await supabase.from('profiles').insert({
             username: cleanName,
             phone_number: phoneNumber,
@@ -106,28 +134,22 @@ app.post('/register', async (req, res) => {
     }
 });
 
-// 3. LOGIN (Updated for Username OR ID)
+// 3. LOGIN
 app.post('/login', async (req, res) => {
     try {
         const { identifier, password, subscription } = req.body;
 
-        // Determine if input is an ID (6 digits) or a Username
         let query = supabase.from('profiles').select('*');
         if (/^\d{6}$/.test(identifier)) {
             query = query.eq('phone_number', identifier);
         } else {
-            // Case-insensitive match for username would be better, but we'll stick to exact match 
-            // for simplicity unless you added the Citext extension to Supabase.
             query = query.eq('username', identifier);
         }
 
         const { data: user } = await query.single();
 
         if (!user) return res.status(404).json({ error: "User not found" });
-
-        if (!user.password_hash) {
-            return res.status(403).json({ error: "Account too old. No password set." });
-        }
+        if (!user.password_hash) return res.status(403).json({ error: "Account too old. No password set." });
 
         const validPass = await bcrypt.compare(password, user.password_hash);
         if (!validPass) return res.status(401).json({ error: "Incorrect password" });
@@ -142,10 +164,12 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// 4. SEND MESSAGE
+// 4. SEND MESSAGE (Updated with Socket.io)
 app.post('/send-message', async (req, res) => {
     try {
         let { senderNumber, receiverNumber, body } = req.body;
+        
+        // Block check
         const { data: blockData } = await supabase.from('blocks')
             .select('*')
             .eq('blocker_number', receiverNumber)
@@ -159,12 +183,24 @@ app.post('/send-message', async (req, res) => {
 
         const cleanBody = safeClean(body);
 
-        await supabase.from('messages').insert({
+        // Save to DB
+        const { data: savedMsg } = await supabase.from('messages').insert({
             sender_number: senderNumber,
             receiver_number: receiverNumber,
             body: cleanBody
-        });
+        }).select().single();
 
+        // --- REAL TIME NOTIFICATION ---
+        const receiverSocketId = onlineUsers.get(receiverNumber);
+        if (receiverSocketId) {
+            // Send to Receiver
+            io.to(receiverSocketId).emit('receive_message', savedMsg);
+            // Send Signal to Refresh Contacts (puts chat at top)
+            io.to(receiverSocketId).emit('refresh_contacts');
+        }
+        // ------------------------------
+
+        // Web Push (Offline notification)
         const { data: receiver } = await supabase.from('profiles')
             .select('push_sub')
             .eq('phone_number', receiverNumber)
@@ -197,21 +233,39 @@ app.get('/messages/:myNumber', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// 5. ADD CONTACT (FIXED: Mutual Add & Real-time Update)
 app.post('/contacts/add', async (req, res) => {
     try {
         const { ownerNumber, contactNumber, nickname } = req.body;
-        const { data: user } = await supabase.from('profiles').select('id').eq('phone_number', contactNumber).single();
+        
+        // Check if contact exists
+        const { data: contactUser } = await supabase.from('profiles').select('username').eq('phone_number', contactNumber).single();
+        if (!contactUser) return res.status(404).json({ error: "User ID not found" });
 
-        if (!user) return res.status(404).json({ error: "User ID not found" });
+        // Get Owner's username to save for the contact
+        const { data: ownerUser } = await supabase.from('profiles').select('username').eq('phone_number', ownerNumber).single();
 
-        const { error } = await supabase.from('contacts').insert({
+        // 1. Add for Owner (A -> B)
+        await supabase.from('contacts').upsert({
             owner_number: ownerNumber,
             contact_number: contactNumber,
             nickname: safeClean(nickname)
-        });
+        }, { onConflict: 'owner_number, contact_number'});
 
-        if (error && error.code === '23505') return res.status(400).json({ error: "Contact already saved" });
-        if (error) throw error;
+        // 2. Add for Contact (B -> A) - MUTUAL ADD
+        // This ensures B sees A immediately
+        await supabase.from('contacts').upsert({
+            owner_number: contactNumber,
+            contact_number: ownerNumber,
+            nickname: ownerUser ? ownerUser.username : "New Contact"
+        }, { onConflict: 'owner_number, contact_number'});
+
+        // 3. REAL TIME UPDATE
+        const contactSocketId = onlineUsers.get(contactNumber);
+        if (contactSocketId) {
+            io.to(contactSocketId).emit('refresh_contacts');
+        }
+
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
@@ -242,4 +296,5 @@ app.post('/contacts/block', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// CHANGED FROM app.listen TO server.listen FOR SOCKET.IO
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
