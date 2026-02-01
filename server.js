@@ -30,9 +30,18 @@ io.on('connection', (socket) => {
         onlineUsers.set(phoneNumber, socket.id);
         console.log(`User ${phoneNumber} connected.`);
     });
+
+    // NEW: Handle Typing Events
+    socket.on('typing', (data) => {
+        const { receiver, senderNumber } = data;
+        const receiverSocket = onlineUsers.get(receiver);
+        if (receiverSocket) {
+            io.to(receiverSocket).emit('display_typing', { senderNumber });
+        }
+    });
     
     socket.on('disconnect', () => {
-        // Cleanup if needed
+        // Optional: Cleanup users if you want to track offline status later
     });
 });
 // -----------------------
