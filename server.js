@@ -7,9 +7,13 @@ const Filter = require('bad-words');
 const bcrypt = require('bcrypt');
 const http = require('http');
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken'); // SECURITY ADDITION
 
 const app = express();
 const server = http.createServer(app);
+
+// --- CONFIGURATION ---
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_please_change_in_env';
 
 // --- SOCKET.IO SETUP ---
 const io = new Server(server, {
@@ -66,6 +70,21 @@ function safeClean(text) {
 function generatePhoneNumber() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
+
+// --- SECURITY MIDDLEWARE ---
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer TOKEN"
+
+    if (token == null) return res.sendStatus(401); // No token sent
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403); // Token invalid/expired
+        req.user = user; // Attach user info (phoneNumber) to request
+        next();
+    });
+}
+// ---------------------------
 
 async function ensureContactExists(owner, contact, defaultName) {
     try {
@@ -124,7 +143,11 @@ app.post('/register', async (req, res) => {
         }).select().single();
 
         if (error) throw error;
-        res.json({ phoneNumber: data.phone_number, username: data.username });
+
+        // Generate Token
+        const token = jwt.sign({ phoneNumber: data.phone_number }, JWT_SECRET);
+
+        res.json({ phoneNumber: data.phone_number, username: data.username, token: token });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -154,16 +177,24 @@ app.post('/login', async (req, res) => {
             await supabase.from('profiles').update({ push_sub: subscription }).eq('phone_number', user.phone_number);
         }
 
-        res.json({ phoneNumber: user.phone_number, username: user.username });
+        // Generate Token
+        const token = jwt.sign({ phoneNumber: user.phone_number }, JWT_SECRET);
+
+        res.json({ phoneNumber: user.phone_number, username: user.username, token: token });
     } catch (error) {
         res.status(500).json({ error: "Login failed or duplicate username." });
     }
 });
 
-// 4. SEND MESSAGE (Real-time)
-app.post('/send-message', async (req, res) => {
+// 4. SEND MESSAGE (Protected)
+app.post('/send-message', authenticateToken, async (req, res) => {
     try {
         let { senderNumber, receiverNumber, body } = req.body;
+
+        // SECURITY CHECK: Ensure sender claims to be who they are
+        if (req.user.phoneNumber !== senderNumber) {
+            return res.status(403).json({ error: "Identity spoofing detected." });
+        }
         
         const { data: blockData } = await supabase.from('blocks')
             .select('*')
@@ -211,8 +242,14 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-app.get('/messages/:myNumber', async (req, res) => {
+// GET MESSAGES (Protected)
+app.get('/messages/:myNumber', authenticateToken, async (req, res) => {
     try {
+        // SECURITY CHECK: Prevent reading other people's messages
+        if (req.user.phoneNumber !== req.params.myNumber) {
+            return res.status(403).json({ error: "Access Denied" });
+        }
+
         const { data, error } = await supabase.from('messages')
             .select('*')
             .or(`sender_number.eq.${req.params.myNumber},receiver_number.eq.${req.params.myNumber}`)
@@ -223,10 +260,13 @@ app.get('/messages/:myNumber', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 5. CONTACTS (Mutual Add)
-app.post('/contacts/add', async (req, res) => {
+// 5. CONTACTS ADD (Protected)
+app.post('/contacts/add', authenticateToken, async (req, res) => {
     try {
         const { ownerNumber, contactNumber, nickname } = req.body;
+
+        if (req.user.phoneNumber !== ownerNumber) return res.sendStatus(403);
+
         const { data: contactUser } = await supabase.from('profiles').select('username').eq('phone_number', contactNumber).single();
         if (!contactUser) return res.status(404).json({ error: "User ID not found" });
 
@@ -256,42 +296,56 @@ app.post('/contacts/add', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-app.get('/contacts/:myNumber', async (req, res) => {
+// GET CONTACTS (Protected)
+app.get('/contacts/:myNumber', authenticateToken, async (req, res) => {
     try {
+        if (req.user.phoneNumber !== req.params.myNumber) return res.sendStatus(403);
+
         const { data, error } = await supabase.from('contacts').select('*').eq('owner_number', req.params.myNumber);
         if (error) throw error;
         res.json(data);
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 6. UPDATE CONTACT (Rename / Favorite)
-app.post('/contacts/update', async (req, res) => {
+// 6. UPDATE CONTACT (Protected)
+app.post('/contacts/update', authenticateToken, async (req, res) => {
     try {
         const { id, nickname, is_favorite } = req.body;
-        const updates = {};
         
+        // Check ownership of the contact ID
+        const { data: existing } = await supabase.from('contacts').select('owner_number').eq('id', id).single();
+        if (!existing || existing.owner_number !== req.user.phoneNumber) {
+            return res.status(403).json({error: "Unauthorized"});
+        }
+
+        const updates = {};
         if (nickname !== undefined) updates.nickname = safeClean(nickname);
         if (is_favorite !== undefined) updates.is_favorite = is_favorite;
 
-        const { error } = await supabase
-            .from('contacts')
-            .update(updates)
-            .eq('id', id);
+        const { error } = await supabase.from('contacts').update(updates).eq('id', id);
 
         if (error) throw error;
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-app.post('/contacts/delete', async (req, res) => {
+app.post('/contacts/delete', authenticateToken, async (req, res) => {
     try {
+        // Check ownership before delete
+        const { data: existing } = await supabase.from('contacts').select('owner_number').eq('id', req.body.id).single();
+        if (!existing || existing.owner_number !== req.user.phoneNumber) {
+            return res.status(403).json({error: "Unauthorized"});
+        }
+
         await supabase.from('contacts').delete().eq('id', req.body.id);
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-app.post('/contacts/block', async (req, res) => {
+app.post('/contacts/block', authenticateToken, async (req, res) => {
     try {
+        if (req.user.phoneNumber !== req.body.ownerNumber) return res.sendStatus(403);
+
         await supabase.from('blocks').upsert({ 
             blocker_number: req.body.ownerNumber, 
             blocked_number: req.body.blockedNumber 
