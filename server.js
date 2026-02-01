@@ -6,6 +6,7 @@ const { createClient } = require('@supabase/supabase-js');
 const Filter = require('bad-words');
 const bcrypt = require('bcrypt');
 const http = require('http'); // NEW
+const path = require('path');
 const { Server } = require('socket.io'); // NEW
 
 const app = express();
@@ -93,8 +94,10 @@ async function ensureContactExists(owner, contact, defaultName) {
     } catch (err) { console.error("Auto-add error:", err.message); }
 }
 
-// 1. HEALTH CHECK
-app.get('/', (req, res) => res.json({ status: 'online' }));
+// 1. SERVE HTML WEBSITE (This also acts as the Health Check)
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 // 2. REGISTER
 app.post('/register', async (req, res) => {
