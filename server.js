@@ -1,4 +1,3 @@
-
 const express = require('express');
 const webPush = require('web-push');
 const bodyParser = require('body-parser');
@@ -11,8 +10,6 @@ const path = require('path');
 const { Server } = require('socket.io'); // NEW
 
 const app = express();
-
-
 
 const server = http.createServer(app);
 
