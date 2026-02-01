@@ -5,21 +5,33 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const Filter = require('bad-words');
 const bcrypt = require('bcrypt');
-const http = require('http'); // NEW
-const path = require('path');
-const { Server } = require('socket.io'); // NEW
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
-
 const server = http.createServer(app);
 
-// SETUP SOCKET.IO
+// --- SOCKET.IO SETUP ---
 const io = new Server(server, {
     cors: {
         origin: '*',
         methods: ["GET", "POST"]
     }
 });
+
+const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
+
+io.on('connection', (socket) => {
+    socket.on('join', (phoneNumber) => {
+        onlineUsers.set(phoneNumber, socket.id);
+        console.log(`User ${phoneNumber} connected.`);
+    });
+    
+    socket.on('disconnect', () => {
+        // Cleanup if needed
+    });
+});
+// -----------------------
 
 const corsOptions = {
     origin: '*',
@@ -31,22 +43,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(bodyParser.json({ limit: '10mb' }));
-
-// --- SOCKET TRACKING ---
-const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
-
-io.on('connection', (socket) => {
-    // When a user opens the app, they send their phone number
-    socket.on('join', (phoneNumber) => {
-        onlineUsers.set(phoneNumber, socket.id);
-        console.log(`User ${phoneNumber} connected on socket ${socket.id}`);
-    });
-
-    socket.on('disconnect', () => {
-        // Optional: clean up map (complex to do perfectly without looping, strictly not required for MVP)
-    });
-});
-// -----------------------
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
     console.error("CRITICAL ERROR: Supabase Credentials missing.");
@@ -93,10 +89,8 @@ async function ensureContactExists(owner, contact, defaultName) {
     } catch (err) { console.error("Auto-add error:", err.message); }
 }
 
-// 1. SERVE HTML WEBSITE (This also acts as the Health Check)
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
+// 1. HEALTH CHECK
+app.get('/', (req, res) => res.json({ status: 'online' }));
 
 // 2. REGISTER
 app.post('/register', async (req, res) => {
@@ -166,12 +160,11 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// 4. SEND MESSAGE (Updated with Socket.io)
+// 4. SEND MESSAGE (Real-time)
 app.post('/send-message', async (req, res) => {
     try {
         let { senderNumber, receiverNumber, body } = req.body;
         
-        // Block check
         const { data: blockData } = await supabase.from('blocks')
             .select('*')
             .eq('blocker_number', receiverNumber)
@@ -185,24 +178,19 @@ app.post('/send-message', async (req, res) => {
 
         const cleanBody = safeClean(body);
 
-        // Save to DB
         const { data: savedMsg } = await supabase.from('messages').insert({
             sender_number: senderNumber,
             receiver_number: receiverNumber,
             body: cleanBody
         }).select().single();
 
-        // --- REAL TIME NOTIFICATION ---
+        // Socket.io Notify
         const receiverSocketId = onlineUsers.get(receiverNumber);
         if (receiverSocketId) {
-            // Send to Receiver
             io.to(receiverSocketId).emit('receive_message', savedMsg);
-            // Send Signal to Refresh Contacts (puts chat at top)
             io.to(receiverSocketId).emit('refresh_contacts');
         }
-        // ------------------------------
 
-        // Web Push (Offline notification)
         const { data: receiver } = await supabase.from('profiles')
             .select('push_sub')
             .eq('phone_number', receiverNumber)
@@ -235,34 +223,30 @@ app.get('/messages/:myNumber', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// 5. ADD CONTACT (FIXED: Mutual Add & Real-time Update)
+// 5. CONTACTS (Mutual Add)
 app.post('/contacts/add', async (req, res) => {
     try {
         const { ownerNumber, contactNumber, nickname } = req.body;
-        
-        // Check if contact exists
         const { data: contactUser } = await supabase.from('profiles').select('username').eq('phone_number', contactNumber).single();
         if (!contactUser) return res.status(404).json({ error: "User ID not found" });
 
-        // Get Owner's username to save for the contact
         const { data: ownerUser } = await supabase.from('profiles').select('username').eq('phone_number', ownerNumber).single();
 
-        // 1. Add for Owner (A -> B)
+        // Add for Owner
         await supabase.from('contacts').upsert({
             owner_number: ownerNumber,
             contact_number: contactNumber,
             nickname: safeClean(nickname)
         }, { onConflict: 'owner_number, contact_number'});
 
-        // 2. Add for Contact (B -> A) - MUTUAL ADD
-        // This ensures B sees A immediately
+        // Add for Contact (Mutual)
         await supabase.from('contacts').upsert({
             owner_number: contactNumber,
             contact_number: ownerNumber,
             nickname: ownerUser ? ownerUser.username : "New Contact"
         }, { onConflict: 'owner_number, contact_number'});
 
-        // 3. REAL TIME UPDATE
+        // Notify Friend
         const contactSocketId = onlineUsers.get(contactNumber);
         if (contactSocketId) {
             io.to(contactSocketId).emit('refresh_contacts');
@@ -277,6 +261,25 @@ app.get('/contacts/:myNumber', async (req, res) => {
         const { data, error } = await supabase.from('contacts').select('*').eq('owner_number', req.params.myNumber);
         if (error) throw error;
         res.json(data);
+    } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// 6. UPDATE CONTACT (Rename / Favorite)
+app.post('/contacts/update', async (req, res) => {
+    try {
+        const { id, nickname, is_favorite } = req.body;
+        const updates = {};
+        
+        if (nickname !== undefined) updates.nickname = safeClean(nickname);
+        if (is_favorite !== undefined) updates.is_favorite = is_favorite;
+
+        const { error } = await supabase
+            .from('contacts')
+            .update(updates)
+            .eq('id', id);
+
+        if (error) throw error;
+        res.json({ success: true });
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -298,6 +301,4 @@ app.post('/contacts/block', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-// CHANGED FROM app.listen TO server.listen FOR SOCKET.IO
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-// Force update v2
