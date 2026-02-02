@@ -315,6 +315,12 @@ app.post("/send-message", authenticateToken, async (req, res) => {
       io.to(receiverSocketId).emit("receive_message", savedMsg);
       io.to(receiverSocketId).emit("refresh_contacts");
     }
+    // 2. Notify Sender (FIX: This updates your own screen immediately)
+    const senderSocketId = onlineUsers.get(senderNumber);
+    if (senderSocketId) {
+      io.to(senderSocketId).emit("receive_message", savedMsg);
+      io.to(senderSocketId).emit("refresh_contacts");
+    }
 
     const { data: receiver } = await supabase
       .from("profiles")
