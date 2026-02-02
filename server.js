@@ -271,7 +271,12 @@ app.post("/login", async (req, res) => {
 app.post("/send-message", authenticateToken, async (req, res) => {
   try {
     let { senderNumber, receiverNumber, body } = req.body;
-
+    // 1. ADD THIS CHECK
+    if (!body || body.length > 2000) {
+      return res
+        .status(400)
+        .json({ error: "Message too long (max 2000 chars)" });
+    }
     // SECURITY CHECK: Ensure sender claims to be who they are
     if (req.user.phoneNumber !== senderNumber) {
       return res.status(403).json({ error: "Identity spoofing detected." });
