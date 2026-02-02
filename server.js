@@ -7,16 +7,17 @@ const Filter = require("bad-words");
 const bcrypt = require("bcrypt");
 const http = require("http");
 const { Server } = require("socket.io");
-const jwt = require("jsonwebtoken"); // SECURITY ADDITION
-const rateLimit = require("express-rate-limit"); // <--- ADD THIS
+const jwt = require("jsonwebtoken");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
-app.set('trust proxy', 1); // Trust the first proxy (Render's Load Balancer)
+app.set("trust proxy", 1); // Trust Render's proxy
 const server = http.createServer(app);
 
+// --- 1. RATE LIMITER (Relaxed for development) ---
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 300, // Limit each IP to 100 requests per windowMs
+  limit: 1000, // Increased limit so you don't get locked out while testing
   standardHeaders: "draft-7",
   legacyHeaders: false,
 });
@@ -29,12 +30,13 @@ const JWT_SECRET =
 // --- SOCKET.IO SETUP ---
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "*", // Allow connections from any frontend
     methods: ["GET", "POST"],
   },
 });
 
 const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
+
 // --- SOCKET AUTHENTICATION MIDDLEWARE ---
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
@@ -42,26 +44,20 @@ io.use((socket, next) => {
 
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
     if (err) return next(new Error("Authentication error"));
-
-    // Attach the real user ID to the socket object safely
-    socket.user = decoded;
+    socket.user = decoded; // Attach user data to socket
     next();
   });
 });
-// ----------------------------------------
+
 io.on("connection", (socket) => {
-  // SECURITY: Use the trusted phone number from the token, NOT what the client sent
   const phoneNumber = socket.user.phoneNumber;
-
   onlineUsers.set(phoneNumber, socket.id);
-  console.log(`User ${phoneNumber} connected (Auth Verified).`);
+  console.log(`User ${phoneNumber} connected.`);
 
-  // Handle Typing (now safer because we know who 'senderNumber' really is)
   socket.on("typing", (data) => {
-    const { receiver } = data; // We only trust the receiver data
+    const { receiver } = data;
     const receiverSocket = onlineUsers.get(receiver);
     if (receiverSocket) {
-      // We forcefully overwrite senderNumber with the verified one
       io.to(receiverSocket).emit("display_typing", {
         senderNumber: phoneNumber,
       });
@@ -69,7 +65,6 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    // Find the user who had this socket ID and remove them
     for (const [number, socketId] of onlineUsers.entries()) {
       if (socketId === socket.id) {
         onlineUsers.delete(number);
@@ -78,8 +73,8 @@ io.on("connection", (socket) => {
     }
   });
 });
-// -----------------------
 
+// --- MIDDLEWARE ---
 const corsOptions = {
   origin: "*",
   methods: ["GET", "POST", "OPTIONS"],
@@ -91,16 +86,19 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(bodyParser.json({ limit: "10mb" }));
 
+// --- SUPABASE SETUP ---
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   console.error("CRITICAL ERROR: Supabase Credentials missing.");
 }
 
+const supabase = createClient(
+  process.env.SUPABASE_URL || "",
+  process.env.SUPABASE_KEY || "",
+);
+
+// --- WEB PUSH SETUP ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY,
-);
 
 if (publicVapidKey && privateVapidKey) {
   webPush.setVapidDetails(
@@ -112,6 +110,7 @@ if (publicVapidKey && privateVapidKey) {
 
 const filter = new Filter();
 
+// --- HELPERS ---
 function safeClean(text) {
   if (!text || typeof text !== "string") return "";
   try {
@@ -125,20 +124,19 @@ function generatePhoneNumber() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// --- SECURITY MIDDLEWARE ---
+// --- AUTH MIDDLEWARE FOR ROUTES ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; // Format: "Bearer TOKEN"
+  const token = authHeader && authHeader.split(" ")[1];
 
-  if (token == null) return res.sendStatus(401); // No token sent
+  if (token == null) return res.sendStatus(401);
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403); // Token invalid/expired
-    req.user = user; // Attach user info (phoneNumber) to request
+    if (err) return res.sendStatus(403);
+    req.user = user;
     next();
   });
 }
-// ---------------------------
 
 async function ensureContactExists(owner, contact, defaultName) {
   try {
@@ -162,14 +160,15 @@ async function ensureContactExists(owner, contact, defaultName) {
       });
     }
   } catch (err) {
-    console.error("Auto-add error:", err.message);
+    // Ignore duplicates
   }
 }
 
-// 1. HEALTH CHECK
+// ================= ROUTES =================
+
 app.get("/", (req, res) => res.json({ status: "online" }));
 
-// 2. REGISTER
+// --- REGISTER ---
 app.post("/register", async (req, res) => {
   try {
     const { subscription, username, password } = req.body;
@@ -184,6 +183,7 @@ app.post("/register", async (req, res) => {
     let unique = false;
     let attempts = 0;
 
+    // Retry loop for unique ID
     while (!unique && attempts < 5) {
       const { data } = await supabase
         .from("profiles")
@@ -211,7 +211,6 @@ app.post("/register", async (req, res) => {
 
     if (error) throw error;
 
-    // Generate Token
     const token = jwt.sign({ phoneNumber: data.phone_number }, JWT_SECRET);
 
     res.json({
@@ -224,12 +223,19 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// 3. LOGIN
+// --- LOGIN (FIXED) ---
 app.post("/login", async (req, res) => {
   try {
-    const { identifier, password, subscription } = req.body;
+    // FIX: Accept 'loginInput' (what client sends) OR 'identifier'
+    const identifier = req.body.loginInput || req.body.identifier;
+    const { password, subscription } = req.body;
+
+    if (!identifier)
+      return res.status(400).json({ error: "Missing username or ID" });
 
     let query = supabase.from("profiles").select("*");
+
+    // Check if input is a 6-digit ID or a Username
     if (/^\d{6}$/.test(identifier)) {
       query = query.eq("phone_number", identifier);
     } else {
@@ -239,15 +245,18 @@ app.post("/login", async (req, res) => {
     const { data: user } = await query.single();
 
     if (!user) return res.status(404).json({ error: "User not found" });
-    if (!user.password_hash)
+
+    if (!user.password_hash) {
       return res
         .status(403)
         .json({ error: "Account too old. No password set." });
+    }
 
     const validPass = await bcrypt.compare(password, user.password_hash);
     if (!validPass)
       return res.status(401).json({ error: "Incorrect password" });
 
+    // Update push sub if provided
     if (subscription) {
       await supabase
         .from("profiles")
@@ -255,7 +264,6 @@ app.post("/login", async (req, res) => {
         .eq("phone_number", user.phone_number);
     }
 
-    // Generate Token
     const token = jwt.sign({ phoneNumber: user.phone_number }, JWT_SECRET);
 
     res.json({
@@ -264,25 +272,25 @@ app.post("/login", async (req, res) => {
       token: token,
     });
   } catch (error) {
-    res.status(500).json({ error: "Login failed or duplicate username." });
+    console.error("Login Error:", error);
+    res.status(500).json({ error: "Login failed." });
   }
 });
 
-// 4. SEND MESSAGE (Protected)
+// --- SEND MESSAGE ---
 app.post("/send-message", authenticateToken, async (req, res) => {
   try {
     let { senderNumber, receiverNumber, body } = req.body;
-    // 1. ADD THIS CHECK
+
     if (!body || body.length > 2000) {
-      return res
-        .status(400)
-        .json({ error: "Message too long (max 2000 chars)" });
+      return res.status(400).json({ error: "Message too long" });
     }
-    // SECURITY CHECK: Ensure sender claims to be who they are
+    // Security: Validate sender
     if (req.user.phoneNumber !== senderNumber) {
       return res.status(403).json({ error: "Identity spoofing detected." });
     }
 
+    // Check blocks
     const { data: blockData } = await supabase
       .from("blocks")
       .select("*")
@@ -307,13 +315,14 @@ app.post("/send-message", authenticateToken, async (req, res) => {
       .select()
       .single();
 
-    // Socket.io Notify
+    // Socket Notify
     const receiverSocketId = onlineUsers.get(receiverNumber);
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("receive_message", savedMsg);
       io.to(receiverSocketId).emit("refresh_contacts");
     }
 
+    // Push Notify
     const { data: receiver } = await supabase
       .from("profiles")
       .select("push_sub")
@@ -330,7 +339,9 @@ app.post("/send-message", authenticateToken, async (req, res) => {
             sender: senderNumber,
           }),
         );
-      } catch (e) {}
+      } catch (e) {
+        console.log("Push failed", e);
+      }
     }
     res.json({ success: true });
   } catch (error) {
@@ -338,10 +349,9 @@ app.post("/send-message", authenticateToken, async (req, res) => {
   }
 });
 
-// GET MESSAGES (Protected)
+// --- GET MESSAGES ---
 app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
   try {
-    // SECURITY CHECK: Prevent reading other people's messages
     if (req.user.phoneNumber !== req.params.myNumber) {
       return res.status(403).json({ error: "Access Denied" });
     }
@@ -354,6 +364,7 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
       )
       .order("timestamp", { ascending: true })
       .limit(500);
+
     if (error) throw error;
     res.json(data);
   } catch (error) {
@@ -361,11 +372,10 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
   }
 });
 
-// 5. CONTACTS ADD (Protected)
+// --- CONTACTS OPERATIONS ---
 app.post("/contacts/add", authenticateToken, async (req, res) => {
   try {
     const { ownerNumber, contactNumber, nickname } = req.body;
-
     if (req.user.phoneNumber !== ownerNumber) return res.sendStatus(403);
 
     const { data: contactUser } = await supabase
@@ -373,6 +383,7 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
       .select("username")
       .eq("phone_number", contactNumber)
       .single();
+
     if (!contactUser)
       return res.status(404).json({ error: "User ID not found" });
 
@@ -392,7 +403,7 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
       { onConflict: "owner_number, contact_number" },
     );
 
-    // Add for Contact (Mutual)
+    // Add for Contact
     await supabase.from("contacts").upsert(
       {
         owner_number: contactNumber,
@@ -402,11 +413,8 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
       { onConflict: "owner_number, contact_number" },
     );
 
-    // Notify Friend
     const contactSocketId = onlineUsers.get(contactNumber);
-    if (contactSocketId) {
-      io.to(contactSocketId).emit("refresh_contacts");
-    }
+    if (contactSocketId) io.to(contactSocketId).emit("refresh_contacts");
 
     res.json({ success: true });
   } catch (error) {
@@ -414,12 +422,10 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
   }
 });
 
-// GET CONTACTS (Protected)
 app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
   try {
     if (req.user.phoneNumber !== req.params.myNumber)
       return res.sendStatus(403);
-
     const { data, error } = await supabase
       .from("contacts")
       .select("*")
@@ -431,31 +437,23 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
   }
 });
 
-// 6. UPDATE CONTACT (Protected)
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
     const { id, nickname, is_favorite } = req.body;
-
-    // Check ownership of the contact ID
     const { data: existing } = await supabase
       .from("contacts")
       .select("owner_number")
       .eq("id", id)
       .single();
-    if (!existing || existing.owner_number !== req.user.phoneNumber) {
+
+    if (!existing || existing.owner_number !== req.user.phoneNumber)
       return res.status(403).json({ error: "Unauthorized" });
-    }
 
     const updates = {};
     if (nickname !== undefined) updates.nickname = safeClean(nickname);
     if (is_favorite !== undefined) updates.is_favorite = is_favorite;
 
-    const { error } = await supabase
-      .from("contacts")
-      .update(updates)
-      .eq("id", id);
-
-    if (error) throw error;
+    await supabase.from("contacts").update(updates).eq("id", id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -464,15 +462,14 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
 
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
-    // Check ownership before delete
     const { data: existing } = await supabase
       .from("contacts")
       .select("owner_number")
       .eq("id", req.body.id)
       .single();
-    if (!existing || existing.owner_number !== req.user.phoneNumber) {
+
+    if (!existing || existing.owner_number !== req.user.phoneNumber)
       return res.status(403).json({ error: "Unauthorized" });
-    }
 
     await supabase.from("contacts").delete().eq("id", req.body.id);
     res.json({ success: true });
@@ -481,11 +478,11 @@ app.post("/contacts/delete", authenticateToken, async (req, res) => {
   }
 });
 
+// --- BLOCKING ---
 app.post("/contacts/block", authenticateToken, async (req, res) => {
   try {
     if (req.user.phoneNumber !== req.body.ownerNumber)
       return res.sendStatus(403);
-
     await supabase.from("blocks").upsert(
       {
         blocker_number: req.body.ownerNumber,
@@ -498,43 +495,34 @@ app.post("/contacts/block", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-// --- NEW: UNBLOCK ENDPOINT ---
+
 app.post("/contacts/unblock", authenticateToken, async (req, res) => {
   try {
-    // Security check
     if (req.user.phoneNumber !== req.body.ownerNumber)
       return res.sendStatus(403);
-
-    // Delete the row from the 'blocks' table
-    const { error } = await supabase.from("blocks").delete().match({
+    await supabase.from("blocks").delete().match({
       blocker_number: req.body.ownerNumber,
       blocked_number: req.body.blockedNumber,
     });
-
-    if (error) throw error;
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// --- NEW: GET BLOCKED LIST ---
 app.get("/blocks/:myNumber", authenticateToken, async (req, res) => {
   try {
     if (req.user.phoneNumber !== req.params.myNumber)
       return res.sendStatus(403);
-
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("blocks")
       .select("blocked_number")
       .eq("blocker_number", req.params.myNumber);
-
-    if (error) throw error;
-    // Return a simple array of numbers: ["123456", "987654"]
-    res.json(data.map((b) => b.blocked_number));
+    res.json(data ? data.map((b) => b.blocked_number) : []);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
