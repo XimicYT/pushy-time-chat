@@ -497,6 +497,43 @@ app.post("/contacts/block", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// --- NEW: UNBLOCK ENDPOINT ---
+app.post("/contacts/unblock", authenticateToken, async (req, res) => {
+  try {
+    // Security check
+    if (req.user.phoneNumber !== req.body.ownerNumber)
+      return res.sendStatus(403);
 
+    // Delete the row from the 'blocks' table
+    const { error } = await supabase.from("blocks").delete().match({
+      blocker_number: req.body.ownerNumber,
+      blocked_number: req.body.blockedNumber,
+    });
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- NEW: GET BLOCKED LIST ---
+app.get("/blocks/:myNumber", authenticateToken, async (req, res) => {
+  try {
+    if (req.user.phoneNumber !== req.params.myNumber)
+      return res.sendStatus(403);
+
+    const { data, error } = await supabase
+      .from("blocks")
+      .select("blocked_number")
+      .eq("blocker_number", req.params.myNumber);
+
+    if (error) throw error;
+    // Return a simple array of numbers: ["123456", "987654"]
+    res.json(data.map((b) => b.blocked_number));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
