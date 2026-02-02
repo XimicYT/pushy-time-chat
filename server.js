@@ -11,6 +11,7 @@ const jwt = require("jsonwebtoken"); // SECURITY ADDITION
 const rateLimit = require("express-rate-limit"); // <--- ADD THIS
 
 const app = express();
+app.set('trust proxy', 1); // Trust the first proxy (Render's Load Balancer)
 const server = http.createServer(app);
 
 const limiter = rateLimit({
