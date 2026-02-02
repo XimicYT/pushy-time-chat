@@ -9,6 +9,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const rateLimit = require("express-rate-limit");
+const cloudinary = require("cloudinary").v2;
+const multer = require("multer");
 
 const app = express();
 app.set("trust proxy", 1); // Trust Render's Load Balancer
@@ -27,6 +29,20 @@ app.use(limiter);
 // --- CONFIGURATION ---
 const JWT_SECRET =
   process.env.JWT_SECRET || "fallback_secret_please_change_in_env";
+
+// --- CLOUDINARY CONFIG ---
+if (process.env.CLOUDINARY_CLOUD_NAME) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+} else {
+  console.warn("WARNING: Cloudinary credentials missing in .env");
+}
+
+// --- MULTER SETUP (Memory Storage for uploads) ---
+const upload = multer({ storage: multer.memoryStorage() });
 
 // --- SOCKET.IO SETUP ---
 const io = new Server(server, {
@@ -220,10 +236,9 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// 3. LOGIN (FIXED: Accepts loginInput OR identifier)
+// 3. LOGIN
 app.post("/login", async (req, res) => {
   try {
-    // SECURITY FIX: Check for both variable names to handle Client/Server mismatch
     const identifier = req.body.loginInput || req.body.identifier;
     const { password, subscription } = req.body;
 
@@ -272,11 +287,34 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// 4. SEND MESSAGE (Protected)
+// --- NEW ROUTE: UPLOAD IMAGE ---
+app.post("/upload-image", authenticateToken, upload.single("image"), async (req, res) => {
+  try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
+      // Upload to Cloudinary using a stream
+      const b64 = Buffer.from(req.file.buffer).toString("base64");
+      let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
+      
+      const result = await cloudinary.uploader.upload(dataURI, {
+          folder: "chat_app_uploads",
+          resource_type: "auto" 
+      });
+
+      // Return the secure URL to the client
+      res.json({ url: result.secure_url });
+
+  } catch (error) {
+      console.error("Upload Error:", error);
+      res.status(500).json({ error: "Image upload failed" });
+  }
+});
+
+// 4. SEND MESSAGE (Protected & Updated for Images)
 app.post("/send-message", authenticateToken, async (req, res) => {
   try {
-    let { senderNumber, receiverNumber, body } = req.body;
+    // Accepts 'type' now. Default to 'text'.
+    let { senderNumber, receiverNumber, body, type } = req.body;
 
     if (!body || body.length > 2000) {
       return res.status(400).json({ error: "Message too long (max 2000 chars)" });
@@ -301,41 +339,41 @@ app.post("/send-message", authenticateToken, async (req, res) => {
     await ensureContactExists(senderNumber, receiverNumber, "New Contact");
     await ensureContactExists(receiverNumber, senderNumber, "New Chat");
 
-    // Clean the text
-    const cleanBody = safeClean(body);
+    // Clean the text ONLY if it is text. If it's an image, body is a URL.
+    const msgType = type === 'image' ? 'image' : 'text';
+    const cleanBody = msgType === 'text' ? safeClean(body) : body;
 
-    // --- FIX 1: CAPTURE AND CHECK SUPABASE ERROR ---
     const { data: savedMsg, error: dbError } = await supabase
       .from("messages")
       .insert({
         sender_number: senderNumber,
         receiver_number: receiverNumber,
         body: cleanBody,
+        type: msgType // Saves 'text' or 'image'
       })
       .select()
       .single();
 
     if (dbError) {
-      console.error("SUPABASE INSERT ERROR:", dbError); // Check your server terminal if this happens!
+      console.error("SUPABASE INSERT ERROR:", dbError);
       throw new Error(dbError.message);
     }
 
-    // --- FIX 2: NOTIFY RECEIVER ---
+    // Notify Receiver
     const receiverSocketId = onlineUsers.get(receiverNumber);
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("receive_message", savedMsg);
       io.to(receiverSocketId).emit("refresh_contacts");
     }
 
-    // --- FIX 3: NOTIFY SENDER (You!) ---
-    // This makes the message appear on your screen immediately
+    // Notify Sender
     const senderSocketId = onlineUsers.get(senderNumber);
     if (senderSocketId) {
       io.to(senderSocketId).emit("receive_message", savedMsg);
       io.to(senderSocketId).emit("refresh_contacts");
     }
 
-    // Push Notifications Logic (Existing)
+    // Push Notifications Logic
     const { data: receiver } = await supabase
       .from("profiles")
       .select("push_sub")
@@ -344,11 +382,12 @@ app.post("/send-message", authenticateToken, async (req, res) => {
 
     if (receiver && receiver.push_sub) {
       try {
+        const pushBody = msgType === 'image' ? '📷 Sent an image' : cleanBody;
         await webPush.sendNotification(
           receiver.push_sub,
           JSON.stringify({
             title: `New Message`,
-            body: cleanBody,
+            body: pushBody,
             sender: senderNumber,
           })
         );
