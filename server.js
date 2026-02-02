@@ -273,19 +273,21 @@ app.post("/login", async (req, res) => {
 });
 
 // 4. SEND MESSAGE (Protected)
+
 app.post("/send-message", authenticateToken, async (req, res) => {
   try {
     let { senderNumber, receiverNumber, body } = req.body;
 
     if (!body || body.length > 2000) {
-      return res
-        .status(400)
-        .json({ error: "Message too long (max 2000 chars)" });
+      return res.status(400).json({ error: "Message too long (max 2000 chars)" });
     }
+    
+    // Validate identity
     if (req.user.phoneNumber !== senderNumber) {
       return res.status(403).json({ error: "Identity spoofing detected." });
     }
 
+    // Check if blocked
     const { data: blockData } = await supabase
       .from("blocks")
       .select("*")
@@ -295,12 +297,15 @@ app.post("/send-message", authenticateToken, async (req, res) => {
 
     if (blockData) return res.json({ success: true, status: "blocked" });
 
+    // Auto-create contacts if they don't exist
     await ensureContactExists(senderNumber, receiverNumber, "New Contact");
     await ensureContactExists(receiverNumber, senderNumber, "New Chat");
 
+    // Clean the text
     const cleanBody = safeClean(body);
 
-    const { data: savedMsg } = await supabase
+    // --- FIX 1: CAPTURE AND CHECK SUPABASE ERROR ---
+    const { data: savedMsg, error: dbError } = await supabase
       .from("messages")
       .insert({
         sender_number: senderNumber,
@@ -310,18 +315,27 @@ app.post("/send-message", authenticateToken, async (req, res) => {
       .select()
       .single();
 
+    if (dbError) {
+      console.error("SUPABASE INSERT ERROR:", dbError); // Check your server terminal if this happens!
+      throw new Error(dbError.message);
+    }
+
+    // --- FIX 2: NOTIFY RECEIVER ---
     const receiverSocketId = onlineUsers.get(receiverNumber);
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("receive_message", savedMsg);
       io.to(receiverSocketId).emit("refresh_contacts");
     }
-    // 2. Notify Sender (FIX: This updates your own screen immediately)
+
+    // --- FIX 3: NOTIFY SENDER (You!) ---
+    // This makes the message appear on your screen immediately
     const senderSocketId = onlineUsers.get(senderNumber);
     if (senderSocketId) {
       io.to(senderSocketId).emit("receive_message", savedMsg);
       io.to(senderSocketId).emit("refresh_contacts");
     }
 
+    // Push Notifications Logic (Existing)
     const { data: receiver } = await supabase
       .from("profiles")
       .select("push_sub")
@@ -336,14 +350,17 @@ app.post("/send-message", authenticateToken, async (req, res) => {
             title: `New Message`,
             body: cleanBody,
             sender: senderNumber,
-          }),
+          })
         );
       } catch (e) {
         console.error("Push Error:", e);
       }
     }
+
     res.json({ success: true });
+
   } catch (error) {
+    console.error("Server Error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
