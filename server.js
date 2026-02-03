@@ -53,6 +53,28 @@ const io = new Server(server, {
 });
 
 const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
+// --- GLOBAL CHAT VARIABLES ---
+let globalMessages = [];
+
+// --- RESET LOGIC (Midnight EST) ---
+function checkReset() {
+  const now = new Date();
+  // Convert current time to EST to check hours
+  const estTime = new Date(
+    now.toLocaleString("en-US", { timeZone: "America/New_York" }),
+  );
+
+  // Check if it is 00:00 (Midnight)
+  if (estTime.getHours() === 0 && estTime.getMinutes() === 0) {
+    if (globalMessages.length > 0) {
+      console.log("Cleaning Global Chat for Midnight EST");
+      globalMessages = []; // Wipe data
+      io.emit("global_reset"); // Tell all clients to clear screens
+    }
+  }
+}
+// Check every 55 seconds to ensure we catch the minute change
+setInterval(checkReset, 55000);
 
 // --- SOCKET AUTHENTICATION MIDDLEWARE ---
 io.use((socket, next) => {
@@ -288,27 +310,31 @@ app.post("/login", async (req, res) => {
 });
 
 // --- NEW ROUTE: UPLOAD IMAGE ---
-app.post("/upload-image", authenticateToken, upload.single("image"), async (req, res) => {
-  try {
+app.post(
+  "/upload-image",
+  authenticateToken,
+  upload.single("image"),
+  async (req, res) => {
+    try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
       // Upload to Cloudinary using a stream
       const b64 = Buffer.from(req.file.buffer).toString("base64");
       let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
-      
+
       const result = await cloudinary.uploader.upload(dataURI, {
-          folder: "chat_app_uploads",
-          resource_type: "auto" 
+        folder: "chat_app_uploads",
+        resource_type: "auto",
       });
 
       // Return the secure URL to the client
       res.json({ url: result.secure_url });
-
-  } catch (error) {
+    } catch (error) {
       console.error("Upload Error:", error);
       res.status(500).json({ error: "Image upload failed" });
-  }
-});
+    }
+  },
+);
 
 // 4. SEND MESSAGE (Protected & Updated for Images)
 app.post("/send-message", authenticateToken, async (req, res) => {
@@ -317,9 +343,11 @@ app.post("/send-message", authenticateToken, async (req, res) => {
     let { senderNumber, receiverNumber, body, type } = req.body;
 
     if (!body || body.length > 2000) {
-      return res.status(400).json({ error: "Message too long (max 2000 chars)" });
+      return res
+        .status(400)
+        .json({ error: "Message too long (max 2000 chars)" });
     }
-    
+
     // Validate identity
     if (req.user.phoneNumber !== senderNumber) {
       return res.status(403).json({ error: "Identity spoofing detected." });
@@ -340,8 +368,8 @@ app.post("/send-message", authenticateToken, async (req, res) => {
     await ensureContactExists(receiverNumber, senderNumber, "New Chat");
 
     // Clean the text ONLY if it is text. If it's an image, body is a URL.
-    const msgType = type === 'image' ? 'image' : 'text';
-    const cleanBody = msgType === 'text' ? safeClean(body) : body;
+    const msgType = type === "image" ? "image" : "text";
+    const cleanBody = msgType === "text" ? safeClean(body) : body;
 
     const { data: savedMsg, error: dbError } = await supabase
       .from("messages")
@@ -349,7 +377,7 @@ app.post("/send-message", authenticateToken, async (req, res) => {
         sender_number: senderNumber,
         receiver_number: receiverNumber,
         body: cleanBody,
-        type: msgType // Saves 'text' or 'image'
+        type: msgType, // Saves 'text' or 'image'
       })
       .select()
       .single();
@@ -382,14 +410,14 @@ app.post("/send-message", authenticateToken, async (req, res) => {
 
     if (receiver && receiver.push_sub) {
       try {
-        const pushBody = msgType === 'image' ? '📷 Sent an image' : cleanBody;
+        const pushBody = msgType === "image" ? "📷 Sent an image" : cleanBody;
         await webPush.sendNotification(
           receiver.push_sub,
           JSON.stringify({
             title: `New Message`,
             body: pushBody,
             sender: senderNumber,
-          })
+          }),
         );
       } catch (e) {
         console.error("Push Error:", e);
@@ -397,7 +425,6 @@ app.post("/send-message", authenticateToken, async (req, res) => {
     }
 
     res.json({ success: true });
-
   } catch (error) {
     console.error("Server Error:", error.message);
     res.status(500).json({ error: error.message });
@@ -591,6 +618,46 @@ app.get("/blocks/:myNumber", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// --- GLOBAL CHAT ROUTES ---
 
+// 1. Get Global History
+app.get('/global/messages', (req, res) => {
+    res.json(globalMessages);
+});
+
+// 2. Send Global Message (Protected)
+app.post('/global/send', authenticateToken, (req, res) => {
+    try {
+        const { senderNumber, username, body, type } = req.body;
+        
+        // Basic validation
+        if (!body || body.length > 2000) {
+            return res.status(400).json({ error: "Message too long" });
+        }
+
+        const msg = {
+            id: Date.now(),
+            sender_number: senderNumber,
+            sender_name: username || "Unknown",
+            // Use your existing safeClean function for text
+            body: type === 'text' ? safeClean(body) : body, 
+            type: type || 'text',
+            timestamp: new Date().toISOString()
+        };
+
+        globalMessages.push(msg);
+
+        // Keep memory usage low (only store last 500 messages)
+        if (globalMessages.length > 500) globalMessages.shift();
+
+        // Broadcast to ALL connected users
+        io.emit('receive_global', msg);
+        
+        res.json({ success: true });
+    } catch (e) {
+        console.error("Global Chat Error:", e);
+        res.status(500).json({ error: "Failed to send global message" });
+    }
+});
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
