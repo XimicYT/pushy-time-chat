@@ -455,10 +455,10 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
       .or(
         `sender_number.eq.${req.params.myNumber},receiver_number.eq.${req.params.myNumber}`,
       )
-      .order("timestamp", { ascending: true })
-      .limit(500);
+      .order("timestamp", { ascending: false }) // Get NEWEST messages first
+      .limit(500); // Grab the recent 500
     if (error) throw error;
-    res.json(data);
+    res.json(data.reverse());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
