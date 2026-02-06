@@ -417,10 +417,21 @@ app.post("/send-message", authenticateToken, async (req, res) => {
             title: `New Message`,
             body: pushBody,
             sender: senderNumber,
-          }),
+          })
         );
       } catch (e) {
-        console.error("Push Error:", e);
+        console.error("Push Error:", e.message);
+        
+        // --- NEW FIX START ---
+        // If the subscription is dead (410) or not found (404), remove it from DB
+        if (e.statusCode === 410 || e.statusCode === 404) {
+          console.log(`Removing dead subscription for user: ${receiverNumber}`);
+          await supabase
+            .from("profiles")
+            .update({ push_sub: null })
+            .eq("phone_number", receiverNumber);
+        }
+        // --- NEW FIX END ---
       }
     }
 
