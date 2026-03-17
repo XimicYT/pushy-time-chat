@@ -534,41 +534,41 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
 // 6. UPDATE CONTACT
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
-    // This safely captures the data whether your frontend sends "nickname", "name", or "custom_name"
-    const { id, nickname, name, custom_name, is_favorite, favorite } = req.body;
+    // Safely capture whatever the frontend sends
+    const {
+      contactNumber,
+      contact_number,
+      id,
+      nickname,
+      name,
+      custom_name,
+      is_favorite,
+      favorite,
+    } = req.body;
 
-    if (!id) return res.status(400).json({ error: "Contact ID is missing" });
+    // Figure out the target number (works whether client sends contactNumber, contact_number, or id)
+    const targetNumber = contactNumber || contact_number || id;
 
-    const { data: existing, error: fetchError } = await supabase
-      .from("contacts")
-      .select("owner_number")
-      .eq("id", id)
-      .single();
-
-    if (
-      fetchError ||
-      !existing ||
-      existing.owner_number !== req.user.phoneNumber
-    ) {
-      return res
-        .status(403)
-        .json({ error: "Unauthorized or contact not found" });
+    if (!targetNumber) {
+      return res.status(400).json({ error: "Contact number is missing" });
     }
 
     const updates = {};
 
-    // Safely figure out the new name and map it to custom_name
+    // Safely figure out the new name
     const newName = custom_name ?? nickname ?? name;
     if (newName !== undefined) updates.custom_name = safeClean(newName);
 
-    // Safely figure out the favorite status and map it to is_favorite
+    // Safely figure out the favorite status
     const newFav = is_favorite ?? favorite;
     if (newFav !== undefined) updates.is_favorite = newFav;
 
+    // Update matching the owner's number AND the contact's number
     const { error: updateError } = await supabase
       .from("contacts")
       .update(updates)
-      .eq("id", id);
+      .eq("owner_number", req.user.phoneNumber)
+      .eq("contact_number", targetNumber);
 
     if (updateError) {
       console.error("Supabase Update Error:", updateError);
@@ -584,30 +584,19 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
 
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
-    const { id } = req.body;
+    const { contactNumber, contact_number, id } = req.body;
+    const targetNumber = contactNumber || contact_number || id;
 
-    if (!id) return res.status(400).json({ error: "Contact ID is missing" });
-
-    const { data: existing, error: fetchError } = await supabase
-      .from("contacts")
-      .select("owner_number")
-      .eq("id", id)
-      .single();
-
-    if (
-      fetchError ||
-      !existing ||
-      existing.owner_number !== req.user.phoneNumber
-    ) {
-      return res
-        .status(403)
-        .json({ error: "Unauthorized or contact not found" });
+    if (!targetNumber) {
+      return res.status(400).json({ error: "Contact number is missing" });
     }
 
+    // Delete the contact where you are the owner and they are the contact
     const { error: deleteError } = await supabase
       .from("contacts")
       .delete()
-      .eq("id", id);
+      .eq("owner_number", req.user.phoneNumber)
+      .eq("contact_number", targetNumber);
 
     if (deleteError) {
       console.error("Supabase Delete Error:", deleteError);
