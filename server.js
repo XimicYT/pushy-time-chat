@@ -532,25 +532,14 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
 });
 
 // 6. UPDATE CONTACT
-// 6. UPDATE CONTACT
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
     const { id, nickname, is_favorite } = req.body;
-
-    // 1. Properly catch select errors instead of assuming 403
-    const { data: existing, error: selectError } = await supabase
+    const { data: existing } = await supabase
       .from("contacts")
       .select("owner_number")
       .eq("id", id)
       .single();
-
-    if (selectError) {
-      console.error("Select Error in Update:", selectError);
-      return res
-        .status(400)
-        .json({ error: "Contact not found or invalid database ID." });
-    }
-
     if (!existing || existing.owner_number !== req.user.phoneNumber) {
       return res.status(403).json({ error: "Unauthorized" });
     }
@@ -559,67 +548,32 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     if (nickname !== undefined) updates.nickname = safeClean(nickname);
     if (is_favorite !== undefined) updates.is_favorite = is_favorite;
 
-    // 2. Add .select() to verify the row was actually changed
-    const { data: updatedData, error: updateError } = await supabase
+    const { error } = await supabase
       .from("contacts")
       .update(updates)
-      .eq("id", id)
-      .select();
+      .eq("id", id);
 
-    if (updateError) throw updateError;
-
-    // 3. Catch Supabase RLS silent failures
-    if (!updatedData || updatedData.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "Action blocked by Supabase RLS policies." });
-    }
-
+    if (error) throw error;
     res.json({ success: true });
   } catch (error) {
-    console.error("Update Catch Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// DELETE CONTACT
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
-    const { data: existing, error: selectError } = await supabase
+    const { data: existing } = await supabase
       .from("contacts")
       .select("owner_number")
       .eq("id", req.body.id)
       .single();
-
-    if (selectError) {
-      console.error("Select Error in Delete:", selectError);
-      return res
-        .status(400)
-        .json({ error: "Contact not found or invalid database ID." });
-    }
-
     if (!existing || existing.owner_number !== req.user.phoneNumber) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    // Add .select() to verify deletion
-    const { data: deletedData, error: deleteError } = await supabase
-      .from("contacts")
-      .delete()
-      .eq("id", req.body.id)
-      .select();
-
-    if (deleteError) throw deleteError;
-
-    if (!deletedData || deletedData.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "Delete blocked by Supabase RLS policies." });
-    }
-
+    await supabase.from("contacts").delete().eq("id", req.body.id);
     res.json({ success: true });
   } catch (error) {
-    console.error("Delete Catch Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
