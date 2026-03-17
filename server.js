@@ -465,6 +465,7 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
 });
 
 // 5. CONTACTS ADD
+
 app.post("/contacts/add", authenticateToken, async (req, res) => {
   try {
     const { ownerNumber, contactNumber, nickname } = req.body;
@@ -516,27 +517,43 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
     const { contactNumber } = req.body;
+    const myNumber = req.user.number || req.user.phone_number;
 
+    if (!myNumber) {
+      return res.status(401).json({ error: "Missing user number in token" });
+    }
     if (!contactNumber) {
-      return res.status(400).json({ error: "Contact number is missing" });
+      return res.status(400).json({ error: "Missing contactNumber" });
     }
 
-    // Delete the contact where you are the owner and they are the contact
-    const { error: deleteError } = await supabase
+    // 1. Delete the actual contact from the contacts table
+    const { data: contactData, error: contactError } = await supabase
       .from("contacts")
       .delete()
-      .eq("owner_number", req.user.phoneNumber)
-      .eq("contact_number", contactNumber);
+      .eq("owner_number", myNumber)
+      .eq("contact_number", contactNumber)
+      .select();
 
-    if (deleteError) {
-      console.error("Supabase Delete Error:", deleteError);
-      throw deleteError;
+    if (contactError) throw contactError;
+
+    if (!contactData || contactData.length === 0) {
+      return res.status(404).send("Contact not found to delete.");
     }
+
+    // 2. Delete the messages between you and this contact
+    const { error: messagesError } = await supabase
+      .from("messages")
+      .delete()
+      .or(
+        `and(sender_number.eq.${myNumber},receiver_number.eq.${contactNumber}),and(sender_number.eq.${contactNumber},receiver_number.eq.${myNumber})`,
+      );
+
+    if (messagesError) throw messagesError;
 
     res.json({ success: true });
   } catch (error) {
-    console.error("Delete Route Error:", error.message);
-    res.status(500).json({ error: error.message });
+    console.error("Delete Error:", error);
+    res.status(500).send(error.message);
   }
 });
 // GET CONTACTS
@@ -558,42 +575,45 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
 
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
-    // Safely capture what the frontend sends
-    const { contactNumber, nickname, is_favorite, favorite } = req.body;
+    const { contactNumber, nickname, is_favorite } = req.body;
 
+    // Safely pull the user's number regardless of how the JWT is structured
+    const myNumber = req.user.number || req.user.phone_number;
+
+    if (!myNumber) {
+      return res.status(401).json({ error: "Missing user number in token" });
+    }
     if (!contactNumber) {
-      return res.status(400).json({ error: "Contact number is missing" });
+      return res.status(400).json({ error: "Missing contactNumber" });
     }
 
+    // Build the update object dynamically so we don't overwrite with nulls
     const updates = {};
+    if (nickname !== undefined) updates.nickname = nickname;
+    if (is_favorite !== undefined) updates.is_favorite = is_favorite;
 
-    // If a nickname was sent, add it to updates
-    if (nickname !== undefined) {
-      updates.nickname = safeClean(nickname);
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No fields to update" });
     }
 
-    // If favorite status was sent (checking both potential variable names), add it
-    const newFav = is_favorite !== undefined ? is_favorite : favorite;
-    if (newFav !== undefined) {
-      updates.is_favorite = newFav;
-    }
-
-    // Update the exact row where you are the owner and they are the contact
-    const { error: updateError } = await supabase
+    const { data, error } = await supabase
       .from("contacts")
       .update(updates)
-      .eq("owner_number", req.user.phoneNumber)
-      .eq("contact_number", contactNumber);
+      .eq("owner_number", myNumber)
+      .eq("contact_number", contactNumber)
+      .select(); // Forces Supabase to return the modified row
 
-    if (updateError) {
-      console.error("Supabase Update Error:", updateError);
-      throw updateError;
+    if (error) throw error;
+
+    // If data is empty, the .eq filters didn't match any existing rows
+    if (!data || data.length === 0) {
+      return res.status(404).send("Contact not found in database.");
     }
 
-    res.json({ success: true });
+    res.json({ success: true, data });
   } catch (error) {
-    console.error("Update Route Error:", error.message);
-    res.status(500).json({ error: error.message });
+    console.error("Update Error:", error);
+    res.status(500).send(error.message);
   }
 });
 
