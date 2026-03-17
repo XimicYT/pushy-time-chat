@@ -514,69 +514,7 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-app.post("/contacts/delete", authenticateToken, async (req, res) => {
-  try {
-    const { contactNumber } = req.body;
 
-    let myNumber =
-      req.user.phoneNumber || req.user.number || req.user.phone_number;
-
-    // Fallback for older tokens
-    if (!myNumber && req.user.id) {
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("phone_number")
-        .eq("id", req.user.id)
-        .single();
-
-      if (profile) myNumber = profile.phone_number;
-    }
-
-    if (!myNumber) {
-      return res.status(401).json({ error: "Missing user number in token" });
-    }
-    if (!contactNumber) {
-      return res.status(400).json({ error: "Missing contactNumber" });
-    }
-
-    // 🚨 THE FIX: Strip all spaces, plus signs, and formatting
-    const safeOwner = String(myNumber).replace(/\D/g, "");
-    const safeContact = String(contactNumber).replace(/\D/g, "");
-
-    // 1. Delete the actual contact
-    const { data: contactData, error: contactError } = await supabase
-      .from("contacts")
-      .delete()
-      .eq("owner_number", safeOwner)
-      .eq("contact_number", safeContact)
-      .select();
-
-    if (contactError) throw contactError;
-
-    if (!contactData || contactData.length === 0) {
-      return res
-        .status(404)
-        .send(
-          "Contact not found to delete. (Check that RLS is fully disabled!)",
-        );
-    }
-
-    // 2. Delete the messages between you and this contact
-    const { error: messagesError } = await supabase
-      .from("messages")
-      .delete()
-      .or(
-        `and(sender_number.eq.${safeOwner},receiver_number.eq.${safeContact}),and(sender_number.eq.${safeContact},receiver_number.eq.${safeOwner})`,
-      );
-
-    if (messagesError) throw messagesError;
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Delete Error:", error);
-    res.status(500).send(error.message);
-  }
-});
 // GET CONTACTS
 app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
   try {
@@ -593,62 +531,73 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
-    const { contactNumber, nickname, is_favorite } = req.body;
+    const { id, nickname, is_favorite } = req.body;
 
+    if (!id) return res.status(400).json({ error: "Missing contact ID" });
+
+    const updates = {};
+    if (nickname !== undefined) updates.nickname = nickname;
+    if (is_favorite !== undefined) updates.is_favorite = is_favorite;
+
+    // 🚨 Target the exact database ID!
+    const { data, error } = await supabase
+      .from("contacts")
+      .update(updates)
+      .eq("id", id)
+      .select();
+
+    if (error) throw error;
+    if (!data || data.length === 0)
+      return res.status(404).send("Contact ID not found.");
+
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+app.post("/contacts/delete", authenticateToken, async (req, res) => {
+  try {
+    const { id, contactNumber } = req.body;
+    if (!id) return res.status(400).json({ error: "Missing contact ID" });
+
+    // 1. Delete the contact directly by its ID
+    const { data: contactData, error: contactError } = await supabase
+      .from("contacts")
+      .delete()
+      .eq("id", id)
+      .select();
+
+    if (contactError) throw contactError;
+
+    // 2. Delete the message history (only if we have the numbers)
     let myNumber =
       req.user.phoneNumber || req.user.number || req.user.phone_number;
-
-    // Fallback for older tokens
     if (!myNumber && req.user.id) {
       const { data: profile } = await supabase
         .from("profiles")
         .select("phone_number")
         .eq("id", req.user.id)
         .single();
-
       if (profile) myNumber = profile.phone_number;
     }
 
-    if (!myNumber) {
-      return res.status(401).json({ error: "Missing user number in token" });
-    }
-    if (!contactNumber) {
-      return res.status(400).json({ error: "Missing contactNumber" });
-    }
+    if (myNumber && contactNumber) {
+      const safeOwner = String(myNumber).replace(/\D/g, "");
+      const safeContact = String(contactNumber).replace(/\D/g, "");
 
-    // 🚨 THE FIX: Strip all spaces, plus signs, and formatting to guarantee an exact database match
-    const safeOwner = String(myNumber).replace(/\D/g, "");
-    const safeContact = String(contactNumber).replace(/\D/g, "");
-
-    const updates = {};
-    if (nickname !== undefined) updates.nickname = nickname;
-    if (is_favorite !== undefined) updates.is_favorite = is_favorite;
-
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: "No fields to update" });
+      await supabase
+        .from("messages")
+        .delete()
+        .or(
+          `and(sender_number.eq.${safeOwner},receiver_number.eq.${safeContact}),and(sender_number.eq.${safeContact},receiver_number.eq.${safeOwner})`,
+        );
     }
 
-    const { data, error } = await supabase
-      .from("contacts")
-      .update(updates)
-      .eq("owner_number", safeOwner)
-      .eq("contact_number", safeContact)
-      .select();
-
-    if (error) throw error;
-
-    if (!data || data.length === 0) {
-      return res
-        .status(404)
-        .send("Contact not found. (Check that RLS is fully disabled!)");
-    }
-
-    res.json({ success: true, data });
+    res.json({ success: true });
   } catch (error) {
-    console.error("Update Error:", error);
     res.status(500).send(error.message);
   }
 });
