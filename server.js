@@ -517,10 +517,11 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
     const { contactNumber } = req.body;
+
     let myNumber =
       req.user.phoneNumber || req.user.number || req.user.phone_number;
 
-    // NEW: Fallback for older tokens that only have req.user.id
+    // Fallback for older tokens
     if (!myNumber && req.user.id) {
       const { data: profile } = await supabase
         .from("profiles")
@@ -534,26 +535,30 @@ app.post("/contacts/delete", authenticateToken, async (req, res) => {
     if (!myNumber) {
       return res.status(401).json({ error: "Missing user number in token" });
     }
-
-    if (!myNumber) {
-      return res.status(401).json({ error: "Missing user number in token" });
-    }
     if (!contactNumber) {
       return res.status(400).json({ error: "Missing contactNumber" });
     }
 
-    // 1. Delete the actual contact from the contacts table
+    // 🚨 THE FIX: Strip all spaces, plus signs, and formatting
+    const safeOwner = String(myNumber).replace(/\D/g, "");
+    const safeContact = String(contactNumber).replace(/\D/g, "");
+
+    // 1. Delete the actual contact
     const { data: contactData, error: contactError } = await supabase
       .from("contacts")
       .delete()
-      .eq("owner_number", myNumber)
-      .eq("contact_number", contactNumber)
+      .eq("owner_number", safeOwner)
+      .eq("contact_number", safeContact)
       .select();
 
     if (contactError) throw contactError;
 
     if (!contactData || contactData.length === 0) {
-      return res.status(404).send("Contact not found to delete.");
+      return res
+        .status(404)
+        .send(
+          "Contact not found to delete. (Check that RLS is fully disabled!)",
+        );
     }
 
     // 2. Delete the messages between you and this contact
@@ -561,7 +566,7 @@ app.post("/contacts/delete", authenticateToken, async (req, res) => {
       .from("messages")
       .delete()
       .or(
-        `and(sender_number.eq.${myNumber},receiver_number.eq.${contactNumber}),and(sender_number.eq.${contactNumber},receiver_number.eq.${myNumber})`,
+        `and(sender_number.eq.${safeOwner},receiver_number.eq.${safeContact}),and(sender_number.eq.${safeContact},receiver_number.eq.${safeOwner})`,
       );
 
     if (messagesError) throw messagesError;
@@ -593,11 +598,10 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
     const { contactNumber, nickname, is_favorite } = req.body;
 
-    // Safely pull the user's number regardless of how the JWT is structured
     let myNumber =
       req.user.phoneNumber || req.user.number || req.user.phone_number;
 
-    // NEW: Fallback for older tokens that only have req.user.id
+    // Fallback for older tokens
     if (!myNumber && req.user.id) {
       const { data: profile } = await supabase
         .from("profiles")
@@ -611,15 +615,14 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     if (!myNumber) {
       return res.status(401).json({ error: "Missing user number in token" });
     }
-
-    if (!myNumber) {
-      return res.status(401).json({ error: "Missing user number in token" });
-    }
     if (!contactNumber) {
       return res.status(400).json({ error: "Missing contactNumber" });
     }
 
-    // Build the update object dynamically so we don't overwrite with nulls
+    // 🚨 THE FIX: Strip all spaces, plus signs, and formatting to guarantee an exact database match
+    const safeOwner = String(myNumber).replace(/\D/g, "");
+    const safeContact = String(contactNumber).replace(/\D/g, "");
+
     const updates = {};
     if (nickname !== undefined) updates.nickname = nickname;
     if (is_favorite !== undefined) updates.is_favorite = is_favorite;
@@ -631,15 +634,16 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     const { data, error } = await supabase
       .from("contacts")
       .update(updates)
-      .eq("owner_number", myNumber)
-      .eq("contact_number", contactNumber)
-      .select(); // Forces Supabase to return the modified row
+      .eq("owner_number", safeOwner)
+      .eq("contact_number", safeContact)
+      .select();
 
     if (error) throw error;
 
-    // If data is empty, the .eq filters didn't match any existing rows
     if (!data || data.length === 0) {
-      return res.status(404).send("Contact not found in database.");
+      return res
+        .status(404)
+        .send("Contact not found. (Check that RLS is fully disabled!)");
     }
 
     res.json({ success: true, data });
