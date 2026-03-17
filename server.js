@@ -517,7 +517,8 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
     const { contactNumber } = req.body;
-    let myNumber = req.user.number || req.user.phone_number;
+    let myNumber =
+      req.user.phoneNumber || req.user.number || req.user.phone_number;
 
     // NEW: Fallback for older tokens that only have req.user.id
     if (!myNumber && req.user.id) {
@@ -593,7 +594,8 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     const { contactNumber, nickname, is_favorite } = req.body;
 
     // Safely pull the user's number regardless of how the JWT is structured
-    let myNumber = req.user.number || req.user.phone_number;
+    let myNumber =
+      req.user.phoneNumber || req.user.number || req.user.phone_number;
 
     // NEW: Fallback for older tokens that only have req.user.id
     if (!myNumber && req.user.id) {
