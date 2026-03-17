@@ -513,7 +513,32 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+app.post("/contacts/delete", authenticateToken, async (req, res) => {
+  try {
+    const { contactNumber } = req.body;
 
+    if (!contactNumber) {
+      return res.status(400).json({ error: "Contact number is missing" });
+    }
+
+    // Delete the contact where you are the owner and they are the contact
+    const { error: deleteError } = await supabase
+      .from("contacts")
+      .delete()
+      .eq("owner_number", req.user.phoneNumber)
+      .eq("contact_number", contactNumber);
+
+    if (deleteError) {
+      console.error("Supabase Delete Error:", deleteError);
+      throw deleteError;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete Route Error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // GET CONTACTS
 app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
   try {
@@ -531,44 +556,34 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
   }
 });
 
-// 6. UPDATE CONTACT
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
-    // Safely capture whatever the frontend sends
-    const {
-      contactNumber,
-      contact_number,
-      id,
-      nickname,
-      name,
-      custom_name,
-      is_favorite,
-      favorite,
-    } = req.body;
+    // Safely capture what the frontend sends
+    const { contactNumber, nickname, is_favorite, favorite } = req.body;
 
-    // Figure out the target number (works whether client sends contactNumber, contact_number, or id)
-    const targetNumber = contactNumber || contact_number || id;
-
-    if (!targetNumber) {
+    if (!contactNumber) {
       return res.status(400).json({ error: "Contact number is missing" });
     }
 
     const updates = {};
 
-    // Safely figure out the new name
-    const newName = custom_name ?? nickname ?? name;
-    if (newName !== undefined) updates.custom_name = safeClean(newName);
+    // If a nickname was sent, add it to updates
+    if (nickname !== undefined) {
+      updates.nickname = safeClean(nickname);
+    }
 
-    // Safely figure out the favorite status
-    const newFav = is_favorite ?? favorite;
-    if (newFav !== undefined) updates.is_favorite = newFav;
+    // If favorite status was sent (checking both potential variable names), add it
+    const newFav = is_favorite !== undefined ? is_favorite : favorite;
+    if (newFav !== undefined) {
+      updates.is_favorite = newFav;
+    }
 
-    // Update matching the owner's number AND the contact's number
+    // Update the exact row where you are the owner and they are the contact
     const { error: updateError } = await supabase
       .from("contacts")
       .update(updates)
       .eq("owner_number", req.user.phoneNumber)
-      .eq("contact_number", targetNumber);
+      .eq("contact_number", contactNumber);
 
     if (updateError) {
       console.error("Supabase Update Error:", updateError);
@@ -578,34 +593,6 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error("Update Route Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/contacts/delete", authenticateToken, async (req, res) => {
-  try {
-    const { contactNumber, contact_number, id } = req.body;
-    const targetNumber = contactNumber || contact_number || id;
-
-    if (!targetNumber) {
-      return res.status(400).json({ error: "Contact number is missing" });
-    }
-
-    // Delete the contact where you are the owner and they are the contact
-    const { error: deleteError } = await supabase
-      .from("contacts")
-      .delete()
-      .eq("owner_number", req.user.phoneNumber)
-      .eq("contact_number", targetNumber);
-
-    if (deleteError) {
-      console.error("Supabase Delete Error:", deleteError);
-      throw deleteError;
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Delete Route Error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
