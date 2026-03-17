@@ -517,7 +517,22 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
     const { contactNumber } = req.body;
-    const myNumber = req.user.number || req.user.phone_number;
+    let myNumber = req.user.number || req.user.phone_number;
+
+    // NEW: Fallback for older tokens that only have req.user.id
+    if (!myNumber && req.user.id) {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("phone_number")
+        .eq("id", req.user.id)
+        .single();
+
+      if (profile) myNumber = profile.phone_number;
+    }
+
+    if (!myNumber) {
+      return res.status(401).json({ error: "Missing user number in token" });
+    }
 
     if (!myNumber) {
       return res.status(401).json({ error: "Missing user number in token" });
@@ -578,7 +593,22 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     const { contactNumber, nickname, is_favorite } = req.body;
 
     // Safely pull the user's number regardless of how the JWT is structured
-    const myNumber = req.user.number || req.user.phone_number;
+    let myNumber = req.user.number || req.user.phone_number;
+
+    // NEW: Fallback for older tokens that only have req.user.id
+    if (!myNumber && req.user.id) {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("phone_number")
+        .eq("id", req.user.id)
+        .single();
+
+      if (profile) myNumber = profile.phone_number;
+    }
+
+    if (!myNumber) {
+      return res.status(401).json({ error: "Missing user number in token" });
+    }
 
     if (!myNumber) {
       return res.status(401).json({ error: "Missing user number in token" });
