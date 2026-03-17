@@ -417,11 +417,11 @@ app.post("/send-message", authenticateToken, async (req, res) => {
             title: `New Message`,
             body: pushBody,
             sender: senderNumber,
-          })
+          }),
         );
       } catch (e) {
         console.error("Push Error:", e.message);
-        
+
         // --- NEW FIX START ---
         // If the subscription is dead (410) or not found (404), remove it from DB
         if (e.statusCode === 410 || e.statusCode === 404) {
@@ -532,14 +532,25 @@ app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
 });
 
 // 6. UPDATE CONTACT
+// 6. UPDATE CONTACT
 app.post("/contacts/update", authenticateToken, async (req, res) => {
   try {
     const { id, nickname, is_favorite } = req.body;
-    const { data: existing } = await supabase
+
+    // 1. Properly catch select errors instead of assuming 403
+    const { data: existing, error: selectError } = await supabase
       .from("contacts")
       .select("owner_number")
       .eq("id", id)
       .single();
+
+    if (selectError) {
+      console.error("Select Error in Update:", selectError);
+      return res
+        .status(400)
+        .json({ error: "Contact not found or invalid database ID." });
+    }
+
     if (!existing || existing.owner_number !== req.user.phoneNumber) {
       return res.status(403).json({ error: "Unauthorized" });
     }
@@ -548,32 +559,67 @@ app.post("/contacts/update", authenticateToken, async (req, res) => {
     if (nickname !== undefined) updates.nickname = safeClean(nickname);
     if (is_favorite !== undefined) updates.is_favorite = is_favorite;
 
-    const { error } = await supabase
+    // 2. Add .select() to verify the row was actually changed
+    const { data: updatedData, error: updateError } = await supabase
       .from("contacts")
       .update(updates)
-      .eq("id", id);
+      .eq("id", id)
+      .select();
 
-    if (error) throw error;
+    if (updateError) throw updateError;
+
+    // 3. Catch Supabase RLS silent failures
+    if (!updatedData || updatedData.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "Action blocked by Supabase RLS policies." });
+    }
+
     res.json({ success: true });
   } catch (error) {
+    console.error("Update Catch Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// DELETE CONTACT
 app.post("/contacts/delete", authenticateToken, async (req, res) => {
   try {
-    const { data: existing } = await supabase
+    const { data: existing, error: selectError } = await supabase
       .from("contacts")
       .select("owner_number")
       .eq("id", req.body.id)
       .single();
+
+    if (selectError) {
+      console.error("Select Error in Delete:", selectError);
+      return res
+        .status(400)
+        .json({ error: "Contact not found or invalid database ID." });
+    }
+
     if (!existing || existing.owner_number !== req.user.phoneNumber) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    await supabase.from("contacts").delete().eq("id", req.body.id);
+    // Add .select() to verify deletion
+    const { data: deletedData, error: deleteError } = await supabase
+      .from("contacts")
+      .delete()
+      .eq("id", req.body.id)
+      .select();
+
+    if (deleteError) throw deleteError;
+
+    if (!deletedData || deletedData.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "Delete blocked by Supabase RLS policies." });
+    }
+
     res.json({ success: true });
   } catch (error) {
+    console.error("Delete Catch Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -632,43 +678,43 @@ app.get("/blocks/:myNumber", authenticateToken, async (req, res) => {
 // --- GLOBAL CHAT ROUTES ---
 
 // 1. Get Global History
-app.get('/global/messages', (req, res) => {
-    res.json(globalMessages);
+app.get("/global/messages", (req, res) => {
+  res.json(globalMessages);
 });
 
 // 2. Send Global Message (Protected)
-app.post('/global/send', authenticateToken, (req, res) => {
-    try {
-        const { senderNumber, username, body, type } = req.body;
-        
-        // Basic validation
-        if (!body || body.length > 2000) {
-            return res.status(400).json({ error: "Message too long" });
-        }
+app.post("/global/send", authenticateToken, (req, res) => {
+  try {
+    const { senderNumber, username, body, type } = req.body;
 
-        const msg = {
-            id: Date.now(),
-            sender_number: senderNumber,
-            sender_name: username || "Unknown",
-            // Use your existing safeClean function for text
-            body: type === 'text' ? safeClean(body) : body, 
-            type: type || 'text',
-            timestamp: new Date().toISOString()
-        };
-
-        globalMessages.push(msg);
-
-        // Keep memory usage low (only store last 500 messages)
-        if (globalMessages.length > 500) globalMessages.shift();
-
-        // Broadcast to ALL connected users
-        io.emit('receive_global', msg);
-        
-        res.json({ success: true });
-    } catch (e) {
-        console.error("Global Chat Error:", e);
-        res.status(500).json({ error: "Failed to send global message" });
+    // Basic validation
+    if (!body || body.length > 2000) {
+      return res.status(400).json({ error: "Message too long" });
     }
+
+    const msg = {
+      id: Date.now(),
+      sender_number: senderNumber,
+      sender_name: username || "Unknown",
+      // Use your existing safeClean function for text
+      body: type === "text" ? safeClean(body) : body,
+      type: type || "text",
+      timestamp: new Date().toISOString(),
+    };
+
+    globalMessages.push(msg);
+
+    // Keep memory usage low (only store last 500 messages)
+    if (globalMessages.length > 500) globalMessages.shift();
+
+    // Broadcast to ALL connected users
+    io.emit("receive_global", msg);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("Global Chat Error:", e);
+    res.status(500).json({ error: "Failed to send global message" });
+  }
 });
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
