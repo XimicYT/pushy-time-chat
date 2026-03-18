@@ -1,4 +1,3 @@
-const util = require("util");
 const express = require("express");
 const webPush = require("web-push");
 const bodyParser = require("body-parser");
@@ -26,62 +25,6 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use(limiter);
-
-// --- IN-MEMORY SERVER LOGGER ---
-const serverLogs = [];
-const MAX_LOGS = 200;
-
-function captureLog(type, args) {
-  // util.format is built-in to Node and safely handles circular objects without crashing!
-  const msg = util.format.apply(util, args);
-  
-  serverLogs.push({ time: new Date().toISOString(), type, msg });
-  if (serverLogs.length > MAX_LOGS) serverLogs.shift();
-}
-
-const originalLog = console.log;
-const originalError = console.error;
-const originalWarn = console.warn;
-
-console.log = function(...args) { captureLog('INFO', args); originalLog.apply(console, args); };
-console.error = function(...args) { captureLog('ERROR', args); originalError.apply(console, args); };
-console.warn = function(...args) { captureLog('WARN', args); originalWarn.apply(console, args); };
-// --- ADMIN ROUTES ---
-// (Replace your existing /admin/verify with this updated block)
-
-// --- ADMIN ROUTES ---
-const ADMIN_NUMBERS = ["321777"]; 
-
-app.get("/admin/verify", authenticateToken, (req, res) => {
-  // Check all common token properties just to be safe
-  const userNum = req.user.phoneNumber || req.user.phone_number || req.user.number || req.user.id;
-  
-  if (ADMIN_NUMBERS.includes(userNum)) {
-    res.json({ authorized: true });
-  } else {
-    // This logs to your Render terminal so you can see exactly what the token contained
-    console.log("Admin access denied for token payload:", req.user);
-    res.status(403).json({ error: "Unauthorized: Not an admin" });
-  }
-});
-
-app.get("/admin/logs", authenticateToken, (req, res) => {
-  const userNum = req.user.phoneNumber || req.user.phone_number || req.user.number || req.user.id;
-  
-  if (ADMIN_NUMBERS.includes(userNum)) {
-    res.json(serverLogs);
-  } else {
-    res.status(403).json({ error: "Unauthorized" });
-  }
-});
-
-app.get("/admin/logs", authenticateToken, (req, res) => {
-  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
-    res.json(serverLogs);
-  } else {
-    res.status(403).json({ error: "Unauthorized" });
-  }
-});
 
 // --- CONFIGURATION ---
 const JWT_SECRET =
@@ -299,8 +242,6 @@ async function ensureContactExists(owner, contact, defaultName) {
 
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
-// --- ADMIN ROUTES ---
-
 
 // 2. REGISTER
 app.post("/register", async (req, res) => {
