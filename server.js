@@ -224,75 +224,73 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
   }
 });
 // GET Detailed User Profile for Admin
-// GET Detailed User Profile for Admin
-app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
-  const userId = req.params.id;
+app.get('/admin/api/user/:id', authenticateToken, async (req, res) => {
+    const userId = req.params.id;
 
-  try {
-    // 1. Verify admin status first
-    const { data: adminData, error: adminError } = await supabase
-      .from("profiles")
-      .select("is_admin")
-      .eq("phone_number", req.user.phoneNumber)
-      .single();
+    try {
+        // 1. Verify admin status first
+        const { data: adminData, error: adminError } = await supabase
+            .from('profiles')
+            .select('is_admin')
+            .eq('phone_number', req.user.phoneNumber)
+            .single();
 
-    if (adminError || !adminData || !adminData.is_admin) {
-      return res.status(403).json({ success: false, error: "Unauthorized" });
+        if (adminError || !adminData || !adminData.is_admin) {
+            return res.status(403).json({ success: false, error: "Unauthorized" });
+        }
+
+        // 2. Get base user info
+        const { data: user, error: userError } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .single();
+
+        if (userError || !user) {
+            return res.status(404).json({ success: false, error: "User not found" });
+        }
+
+        const userPhone = user.phone_number;
+
+        // 3. Get their contacts (matching your schema: user_number, contact_number, contact_name)
+        const { data: contacts, error: contactsError } = await supabase
+            .from('contacts')
+            .select('contact_name, contact_number, is_favorite')
+            .eq('user_number', userPhone);
+
+        // 4. Calculate exact dates for queries
+        const now = new Date();
+        const todayStr = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+        const weekStr = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const monthStr = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+        // 5. Fetch all stats in parallel for speed!
+        const [todayRes, weekRes, monthRes] = await Promise.all([
+            supabase.from('messages').select('*', { count: 'exact', head: true }).eq('sender_number', userPhone).gte('created_at', todayStr),
+            supabase.from('messages').select('*', { count: 'exact', head: true }).eq('sender_number', userPhone).gte('created_at', weekStr),
+            supabase.from('messages').select('*', { count: 'exact', head: true }).eq('sender_number', userPhone).gte('created_at', monthStr)
+        ]);
+
+        res.json({
+            success: true,
+            user: {
+                id: user.id,
+                username: user.username,
+                phone_number: user.phone_number,
+                created_at: user.created_at,
+                last_login: user.last_login || null
+            },
+            contacts: contacts || [],
+            stats: {
+                today: todayRes.count || 0,
+                week: weekRes.count || 0,
+                month: monthRes.count || 0
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching detailed user stats:", error);
+        res.status(500).json({ success: false, error: "Internal server error" });
     }
-
-    // 2. Get base user info
-    const { data: user, error: userError } = await supabase
-      .from("profiles")
-      .select("id, username, phone_number, created_at")
-      .eq("id", userId)
-      .single();
-
-    if (userError || !user) {
-      return res.status(404).json({ success: false, error: "User not found" });
-    }
-
-    // 3. Get their contacts (Adjusted for Supabase joins if you have a contacts table)
-    // If you don't have a specific contacts table yet, this will safely return an empty array
-    const { data: contacts, error: contactsError } = await supabase
-      .from("contacts")
-      .select(
-        "contact_id, profiles!contacts_contact_id_fkey(username, phone_number)",
-      )
-      .eq("user_id", userId);
-
-    let formattedContacts = [];
-    if (contacts && !contactsError) {
-      formattedContacts = contacts.map((c) => ({
-        username: c.profiles?.username || "Unknown",
-        phone_number: c.profiles?.phone_number || "",
-      }));
-    }
-
-    // 4. Get message stats (Optional: If you have a messages table)
-    // Note: Counting large tables can be slow, but here is a simple Supabase approach:
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const { count: msgsToday } = await supabase
-      .from("messages")
-      .select("*", { count: "exact", head: true })
-      .eq("sender_id", userId)
-      .gte("created_at", today.toISOString());
-
-    res.json({
-      success: true,
-      user: user,
-      contacts: formattedContacts,
-      stats: {
-        today: msgsToday || 0,
-        week: 0, // You can expand these counts later!
-        month: 0,
-      },
-    });
-  } catch (error) {
-    console.error("Error fetching detailed user stats:", error);
-    res.status(500).json({ success: false, error: "Internal server error" });
-  }
 });
 // 3. Get Dashboard Analytics
 app.get("/admin/stats", authenticateToken, async (req, res) => {
