@@ -51,7 +51,40 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
+// --- SETTINGS ROUTES ---
 
+// GET SETTINGS
+app.get("/settings/:myNumber", authenticateToken, async (req, res) => {
+  try {
+    if (req.user.phoneNumber !== req.params.myNumber)
+      return res.sendStatus(403);
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("is_dark, accent, is_pattern")
+      .eq("phone_number", req.params.myNumber)
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// UPDATE SETTINGS
+app.post("/settings/update", authenticateToken, async (req, res) => {
+  try {
+    const { isDark, accent, isPattern } = req.body;
+    const { error } = await supabase
+      .from("profiles")
+      .update({ is_dark: isDark, accent: accent, is_pattern: isPattern })
+      .eq("phone_number", req.user.phoneNumber);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
 // --- GLOBAL CHAT VARIABLES ---
 let globalMessages = [];
@@ -243,6 +276,7 @@ async function ensureContactExists(owner, contact, defaultName) {
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
 
+
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
@@ -279,6 +313,9 @@ app.post("/register", async (req, res) => {
         phone_number: phoneNumber,
         push_sub: subscription,
         password_hash: hashedPassword,
+        is_dark: false,     // --- NEW: Default dark mode
+        accent: "blue",     // --- NEW: Default accent color
+        is_pattern: false   // --- NEW: Default background pattern
       })
       .select()
       .single();
@@ -291,6 +328,11 @@ app.post("/register", async (req, res) => {
       phoneNumber: data.phone_number,
       username: data.username,
       token: token,
+      settings: {           // --- NEW: Return default settings to client
+        is_dark: false,
+        accent: "blue",
+        is_pattern: false
+      }
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -341,6 +383,11 @@ app.post("/login", async (req, res) => {
       phoneNumber: user.phone_number,
       username: user.username,
       token: token,
+      settings: {
+        is_dark: user.is_dark || false,
+        accent: user.accent || "blue",
+        is_pattern: user.is_pattern || false
+      }
     });
   } catch (error) {
     console.error("Login Error:", error);
