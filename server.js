@@ -261,38 +261,22 @@ app.get("/admin/stats", authenticateToken, async (req, res) => {
 });
 // 4. Get List of Online Users
 app.get("/admin/online", authenticateToken, async (req, res) => {
-  try {
-    // Verify admin
-    const { data: adminData, error: adminError } = await supabase
-      .from("profiles")
-      .select("is_admin")
-      .eq("phone_number", req.user.phoneNumber)
-      .single();
+  if (req.user.number !== ADMIN_NUMBER) return res.sendStatus(403);
 
-    if (adminError || !adminData || !adminData.is_admin) {
-      return res.status(403).json({ error: "Unauthorized" });
+  const onlineUsers = [];
+  // We map through connected sockets to find the users and their specific status
+  for (const [userId, socket] of io.sockets.sockets) {
+    if (socket.userNumber) {
+      onlineUsers.push({
+        id: socket.id,
+        phone_number: socket.userNumber,
+        username: socket.username || "Unknown",
+        // Pull the status from our global userStatuses object
+        status: userStatuses[socket.userNumber] || "active" 
+      });
     }
-
-    // Get phone numbers currently in the server's memory
-    const onlineNumbers = Array.from(onlineUsers.keys());
-    
-    if (onlineNumbers.length === 0) {
-      return res.json([]); // No one online
-    }
-
-    // Fetch the usernames for those phone numbers
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("username, phone_number")
-      .in("phone_number", onlineNumbers);
-
-    if (error) throw error;
-    res.json(data);
-
-  } catch (err) {
-    console.error("Admin Fetch Online Error:", err.message);
-    res.status(500).json({ error: "Failed to fetch online users." });
   }
+  res.json(onlineUsers);
 });
 // --- SUPABASE & PUSH SETUP ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
