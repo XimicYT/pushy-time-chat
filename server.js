@@ -830,6 +830,50 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// --- ADMIN: BAN USER ROUTE ---
+app.post("/admin/api/ban", authenticateToken, async (req, res) => {
+  try {
+    const { targetNumber, types, reason, days } = req.body;
+
+    // 1. Basic Validation
+    if (!targetNumber || !types || types.length === 0) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    // 2. Optional: Verify the person making this request is actually an admin!
+    // If you have an admin verification function, use it here to prevent abuse.
+
+    // 3. Calculate Expiration Date
+    let expiresAt = null; // null means forever
+    if (days !== -1) {
+      const date = new Date();
+      date.setDate(date.getDate() + days); // Add the specified number of days to today
+      expiresAt = date.toISOString();
+    }
+
+    // 4. Insert into Supabase
+    const { data, error } = await supabase
+      .from("bans")
+      .insert({
+        phone_number: targetNumber,
+        ban_types: types, // Stored safely as JSONB
+        reason: reason,
+        expires_at: expiresAt,
+        created_at: new Date().toISOString() // <-- Added this!
+      });
+
+    if (error) {
+      console.error("Supabase Ban Error:", error);
+      return res.status(500).json({ error: "Database failed to ban user" });
+    }
+
+    // 5. Success
+    res.json({ success: true, message: "User banned successfully." });
+  } catch (err) {
+    console.error("Ban API Catch Error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 // NEW ROUTE: Get Paginated Messages for a SPECIFIC Chat
 app.get(
   "/messages/chat/:myNumber/:contactNumber",
