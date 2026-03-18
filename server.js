@@ -50,13 +50,29 @@ console.warn = function(...args) { captureLog('WARN', args); originalWarn.apply(
 // --- ADMIN ROUTES ---
 // (Replace your existing /admin/verify with this updated block)
 
-const ADMIN_NUMBERS = ["321777"]; // Add your admin numbers here
+// --- ADMIN ROUTES ---
+const ADMIN_NUMBERS = ["321777"]; 
 
 app.get("/admin/verify", authenticateToken, (req, res) => {
-  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
+  // Check all common token properties just to be safe
+  const userNum = req.user.phoneNumber || req.user.phone_number || req.user.number || req.user.id;
+  
+  if (ADMIN_NUMBERS.includes(userNum)) {
     res.json({ authorized: true });
   } else {
+    // This logs to your Render terminal so you can see exactly what the token contained
+    console.log("Admin access denied for token payload:", req.user);
     res.status(403).json({ error: "Unauthorized: Not an admin" });
+  }
+});
+
+app.get("/admin/logs", authenticateToken, (req, res) => {
+  const userNum = req.user.phoneNumber || req.user.phone_number || req.user.number || req.user.id;
+  
+  if (ADMIN_NUMBERS.includes(userNum)) {
+    res.json(serverLogs);
+  } else {
+    res.status(403).json({ error: "Unauthorized" });
   }
 });
 
