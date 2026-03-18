@@ -254,10 +254,11 @@ app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
     const userPhone = user.phone_number;
 
     // 3. Get Contacts (UPDATED TO USE owner_number)
+    // 3. Get Contacts (UPDATED TO USE owner_number)
     const { data: contacts } = await supabase
       .from("contacts")
-      .select("contact_name, contact_number, is_favorite")
-      .eq("owner_number", userPhone); // Fixed column name!
+      .select("nickname, contact_number, is_favorite") // FIXED: Changed contact_name to nickname
+      .eq("owner_number", userPhone);
 
     // 4. Get Message Stats
     const now = new Date();
@@ -279,17 +280,17 @@ app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
         .from("messages")
         .select("*", { count: "exact", head: true })
         .eq("sender_number", userPhone)
-        .gte("created_at", todayStr),
+        .gte("timestamp", todayStr), // FIXED: created_at -> timestamp
       supabase
         .from("messages")
         .select("*", { count: "exact", head: true })
         .eq("sender_number", userPhone)
-        .gte("created_at", weekStr),
+        .gte("timestamp", weekStr), // FIXED: created_at -> timestamp
       supabase
         .from("messages")
         .select("*", { count: "exact", head: true })
         .eq("sender_number", userPhone)
-        .gte("created_at", monthStr),
+        .gte("timestamp", monthStr), // FIXED: created_at -> timestamp
     ]);
 
     res.json({
