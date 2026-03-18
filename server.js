@@ -30,8 +30,6 @@ app.use(limiter);
 const JWT_SECRET =
   process.env.JWT_SECRET || "fallback_secret_please_change_in_env";
 
-const ADMIN_NUMBER = process.env.ADMIN_NUMBER || "321777"; // e.g., "1234567890"
-
 // --- CLOUDINARY CONFIG ---
 if (process.env.CLOUDINARY_CLOUD_NAME) {
   cloudinary.config({
@@ -263,47 +261,37 @@ app.get("/admin/stats", authenticateToken, async (req, res) => {
 });
 // 4. Get List of Online Users
 app.get("/admin/online", authenticateToken, async (req, res) => {
-  if (req.user.number !== ADMIN_NUMBER) return res.sendStatus(403);
-
   try {
-    const onlineUsers = [];
-    
-    // Safely get all connected sockets regardless of Socket.io version
-    let allSockets = [];
-    if (typeof io.fetchSockets === 'function') {
-        allSockets = await io.fetchSockets(); // For modern Socket.io
-    } else if (io.sockets && io.sockets.sockets && typeof io.sockets.sockets.values === 'function') {
-        allSockets = Array.from(io.sockets.sockets.values()); 
-    } else {
-        // Fallback for older versions
-        allSockets = Object.values(io.sockets.sockets || io.sockets.connected || {});
+    // Verify admin
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", req.user.phoneNumber)
+      .single();
+
+    if (adminError || !adminData || !adminData.is_admin) {
+      return res.status(403).json({ error: "Unauthorized" });
     }
 
-    for (const socket of allSockets) {
-      // Look for the user's data on the socket object
-      const phone = socket.userNumber || socket.number || socket.userId || "Unknown Connection";
-      const name = socket.username || socket.name || "Anonymous";
-      
-      // Safely check for status without throwing an undefined crash
-      let currentStatus = "active";
-      if (typeof userStatuses !== "undefined" && userStatuses[phone]) {
-          currentStatus = userStatuses[phone]; // If you added it globally
-      } else if (socket.status) {
-          currentStatus = socket.status; // If saved directly to the socket
-      }
-
-      onlineUsers.push({
-        id: socket.id,
-        phone_number: phone,
-        username: name,
-        status: currentStatus 
-      });
-    }
+    // Get phone numbers currently in the server's memory
+    const onlineNumbers = Array.from(onlineUsers.keys());
     
-    res.json(onlineUsers);
-  } catch (error) {
-    console.error("Admin Online Users Error:", error);
-    res.status(500).json({ error: "Server error fetching users" });
+    if (onlineNumbers.length === 0) {
+      return res.json([]); // No one online
+    }
+
+    // Fetch the usernames for those phone numbers
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("username, phone_number")
+      .in("phone_number", onlineNumbers);
+
+    if (error) throw error;
+    res.json(data);
+
+  } catch (err) {
+    console.error("Admin Fetch Online Error:", err.message);
+    res.status(500).json({ error: "Failed to fetch online users." });
   }
 });
 // --- SUPABASE & PUSH SETUP ---
