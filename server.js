@@ -255,7 +255,7 @@ app.post("/register", async (req, res) => {
       token: token,
     });
   } catch (error) {
-    res.status(10000).json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -457,7 +457,7 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
         `sender_number.eq.${req.params.myNumber},receiver_number.eq.${req.params.myNumber}`,
       )
       .order("timestamp", { ascending: false }) // Get NEWEST messages first
-      .limit(500); // Grab the recent 500
+      .limit(10000); // Grab the recent 500
     if (error) throw error;
     res.json(data.reverse());
   } catch (error) {
