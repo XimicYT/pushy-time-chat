@@ -1,3 +1,4 @@
+const util = require("util");
 const express = require("express");
 const webPush = require("web-push");
 const bodyParser = require("body-parser");
@@ -25,20 +26,19 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use(limiter);
+
 // --- IN-MEMORY SERVER LOGGER ---
 const serverLogs = [];
-const MAX_LOGS = 200; // Keep the last 200 logs so we don't run out of memory
+const MAX_LOGS = 200;
 
 function captureLog(type, args) {
-  const msg = Array.from(args).map(a => 
-    typeof a === 'object' ? JSON.stringify(a) : String(a)
-  ).join(' ');
+  // util.format is built-in to Node and safely handles circular objects without crashing!
+  const msg = util.format.apply(util, args);
   
   serverLogs.push({ time: new Date().toISOString(), type, msg });
   if (serverLogs.length > MAX_LOGS) serverLogs.shift();
 }
 
-// Intercept standard console outputs
 const originalLog = console.log;
 const originalError = console.error;
 const originalWarn = console.warn;
@@ -46,7 +46,6 @@ const originalWarn = console.warn;
 console.log = function(...args) { captureLog('INFO', args); originalLog.apply(console, args); };
 console.error = function(...args) { captureLog('ERROR', args); originalError.apply(console, args); };
 console.warn = function(...args) { captureLog('WARN', args); originalWarn.apply(console, args); };
-
 // --- ADMIN ROUTES ---
 // (Replace your existing /admin/verify with this updated block)
 
