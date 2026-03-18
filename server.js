@@ -77,12 +77,20 @@ function checkReset() {
 setInterval(checkReset, 55000);
 
 // --- SOCKET AUTHENTICATION MIDDLEWARE ---
-io.use((socket, next) => {
+// --- SOCKET AUTHENTICATION MIDDLEWARE ---
+io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) return next(new Error("Authentication error"));
 
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+  jwt.verify(token, JWT_SECRET, async (err, decoded) => {
     if (err) return next(new Error("Authentication error"));
+
+    // NEW: Check if this user is banned from the app upon connection!
+    const activeBans = await getActiveBans(decoded.phoneNumber);
+    if (activeBans.includes("login")) {
+      return next(new Error("BANNED")); // Reject the connection entirely
+    }
+
     socket.user = decoded; // Attach user info safely
     next();
   });
@@ -575,29 +583,42 @@ async function ensureContactExists(owner, contact, defaultName) {
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
 // --- BAN SYSTEM HELPER ---
+// --- BAN SYSTEM HELPER ---
+// --- BAN SYSTEM HELPER ---
 async function getActiveBans(phoneNumber) {
-  if (!phoneNumber) return []; // NEW: Safety check if phone number is missing
+  if (!phoneNumber) return [];
 
-  const { data: bans, error } = await supabase
-    .from("bans")
-    .select("ban_types, expires_at")
-    .eq("phone_number", phoneNumber);
+  try {
+    const { data: bans, error } = await supabase
+      .from("bans")
+      .select("ban_types, expires_at")
+      .eq("phone_number", phoneNumber);
 
-  if (error || !bans) return [];
+    if (error || !bans) return [];
 
-  const now = new Date();
-  let activeTypes = new Set();
+    const now = new Date();
+    let activeTypes = new Set();
 
-  bans.forEach((ban) => {
-    if (!ban.expires_at || new Date(ban.expires_at) > now) {
-      if (ban.types) {
-        // NEW: Safety check
-        ban.types.forEach((type) => activeTypes.add(type));
+    bans.forEach((ban) => {
+      // Check if ban is permanent OR hasn't expired yet
+      if (!ban.expires_at || new Date(ban.expires_at) > now) {
+        if (ban.ban_types) {
+          // Bulletproof extraction: Whether it's an Array or a Postgres String "{login, global}"
+          const typeString = JSON.stringify(ban.ban_types).toLowerCase();
+          
+          if (typeString.includes("login")) activeTypes.add("login");
+          if (typeString.includes("global")) activeTypes.add("global");
+          if (typeString.includes("private")) activeTypes.add("private");
+        }
       }
-    }
-  });
+    });
 
-  return Array.from(activeTypes); // CRUCIAL: Must return the array!
+    return Array.from(activeTypes);
+  } catch (err) {
+    console.error("Fatal error in getActiveBans:", err);
+    // If something horribly breaks, assume they are NOT allowed as a safety measure
+    return ["login", "global", "private"]; 
+  }
 }
 // 2. REGISTER
 app.post("/register", async (req, res) => {
