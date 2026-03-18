@@ -224,73 +224,94 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
   }
 });
 // GET Detailed User Profile for Admin
-app.get('/admin/api/user/:id', authenticateToken, async (req, res) => {
-    const userId = req.params.id;
+app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
+  const userId = req.params.id;
 
-    try {
-        // 1. Verify admin status first
-        const { data: adminData, error: adminError } = await supabase
-            .from('profiles')
-            .select('is_admin')
-            .eq('phone_number', req.user.phoneNumber)
-            .single();
+  try {
+    // 1. Verify admin status first
+    const adminPhone =
+      req.user.phoneNumber || req.user.number || req.user.phone_number;
+    const { data: adminData } = await supabase
+      .from("profiles") // (or 'users' depending on your table)
+      .select("is_admin")
+      .eq("phone_number", adminPhone)
+      .single();
 
-        if (adminError || !adminData || !adminData.is_admin) {
-            return res.status(403).json({ success: false, error: "Unauthorized" });
-        }
-
-        // 2. Get base user info
-        const { data: user, error: userError } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .single();
-
-        if (userError || !user) {
-            return res.status(404).json({ success: false, error: "User not found" });
-        }
-
-        const userPhone = user.phone_number;
-
-        // 3. Get their contacts (matching your schema: user_number, contact_number, contact_name)
-        const { data: contacts, error: contactsError } = await supabase
-            .from('contacts')
-            .select('contact_name, contact_number, is_favorite')
-            .eq('user_number', userPhone);
-
-        // 4. Calculate exact dates for queries
-        const now = new Date();
-        const todayStr = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-        const weekStr = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const monthStr = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-        // 5. Fetch all stats in parallel for speed!
-        const [todayRes, weekRes, monthRes] = await Promise.all([
-            supabase.from('messages').select('*', { count: 'exact', head: true }).eq('sender_number', userPhone).gte('created_at', todayStr),
-            supabase.from('messages').select('*', { count: 'exact', head: true }).eq('sender_number', userPhone).gte('created_at', weekStr),
-            supabase.from('messages').select('*', { count: 'exact', head: true }).eq('sender_number', userPhone).gte('created_at', monthStr)
-        ]);
-
-        res.json({
-            success: true,
-            user: {
-                id: user.id,
-                username: user.username,
-                phone_number: user.phone_number,
-                created_at: user.created_at,
-                last_login: user.last_login || null
-            },
-            contacts: contacts || [],
-            stats: {
-                today: todayRes.count || 0,
-                week: weekRes.count || 0,
-                month: monthRes.count || 0
-            }
-        });
-    } catch (error) {
-        console.error("Error fetching detailed user stats:", error);
-        res.status(500).json({ success: false, error: "Internal server error" });
+    if (!adminData || !adminData.is_admin) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
     }
+
+    // 2. Get base user info
+    const { data: user } = await supabase
+      .from("profiles") // (or 'users')
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    if (!user)
+      return res.status(404).json({ success: false, error: "User not found" });
+
+    const userPhone = user.phone_number;
+
+    // 3. Get Contacts (UPDATED TO USE owner_number)
+    const { data: contacts } = await supabase
+      .from("contacts")
+      .select("contact_name, contact_number, is_favorite")
+      .eq("owner_number", userPhone); // Fixed column name!
+
+    // 4. Get Message Stats
+    const now = new Date();
+    const todayStr = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    ).toISOString();
+    const weekStr = new Date(
+      now.getTime() - 7 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const monthStr = new Date(
+      now.getTime() - 30 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    // Query the messages table using sender_number
+    const [todayRes, weekRes, monthRes] = await Promise.all([
+      supabase
+        .from("messages")
+        .select("*", { count: "exact", head: true })
+        .eq("sender_number", userPhone)
+        .gte("created_at", todayStr),
+      supabase
+        .from("messages")
+        .select("*", { count: "exact", head: true })
+        .eq("sender_number", userPhone)
+        .gte("created_at", weekStr),
+      supabase
+        .from("messages")
+        .select("*", { count: "exact", head: true })
+        .eq("sender_number", userPhone)
+        .gte("created_at", monthStr),
+    ]);
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        phone_number: user.phone_number,
+        created_at: user.created_at,
+        last_login: user.last_login || null, // We will build this tracker next!
+      },
+      contacts: contacts || [],
+      stats: {
+        today: todayRes.count || 0,
+        week: weekRes.count || 0,
+        month: monthRes.count || 0,
+      },
+    });
+  } catch (error) {
+    console.error("Profile Fetch Error:", error);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
 });
 // 3. Get Dashboard Analytics
 app.get("/admin/stats", authenticateToken, async (req, res) => {
@@ -550,7 +571,14 @@ app.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign({ phoneNumber: user.phone_number }, JWT_SECRET);
-
+    try {
+      await supabase
+        .from("profiles") // (or 'users' if your table is called users)
+        .update({ last_login: new Date().toISOString() })
+        .eq("phone_number", user.phone_number);
+    } catch (updateErr) {
+      console.error("Failed to update last login:", updateErr);
+    }
     res.json({
       phoneNumber: user.phone_number,
       username: user.username,
