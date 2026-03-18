@@ -528,6 +528,8 @@ async function ensureContactExists(owner, contact, defaultName) {
 app.get("/", (req, res) => res.json({ status: "online" }));
 // --- BAN SYSTEM HELPER ---
 async function getActiveBans(phoneNumber) {
+  if (!phoneNumber) return []; // NEW: Safety check if phone number is missing
+
   const { data: bans, error } = await supabase
     .from("bans")
     .select("types, expires_at")
@@ -540,11 +542,14 @@ async function getActiveBans(phoneNumber) {
 
   bans.forEach((ban) => {
     if (!ban.expires_at || new Date(ban.expires_at) > now) {
-      ban.types.forEach((type) => activeTypes.add(type));
+      if (ban.types) {
+        // NEW: Safety check
+        ban.types.forEach((type) => activeTypes.add(type));
+      }
     }
   });
 
-  return Array.from(activeTypes);
+  return Array.from(activeTypes); // CRUCIAL: Must return the array!
 }
 // 2. REGISTER
 app.post("/register", async (req, res) => {
@@ -694,12 +699,15 @@ app.post(
 // 4. SEND MESSAGE (Protected & Updated for Images)
 app.post("/send-message", authenticateToken, async (req, res) => {
   try {
+    const { senderNumber, receiverNumber, body, type } = req.body;
+
+    // 2. THEN check for bans using optional chaining (?.)
     const activeBans = await getActiveBans(senderNumber);
-    if (activeBans.includes("private") || activeBans.includes("login")) {
-      return res.status(403).json({ error: "You are banned from private messaging." });
+    if (activeBans?.includes("private") || activeBans?.includes("login")) {
+      return res
+        .status(403)
+        .json({ error: "You are banned from private messaging." });
     }
-    // Accepts 'type' now. Default to 'text'.
-    let { senderNumber, receiverNumber, body, type } = req.body;
 
     if (!body || body.length > 2000) {
       return res
@@ -1075,12 +1083,16 @@ app.get("/global/messages", (req, res) => {
 // 2. Send Global Message (Protected)
 app.post("/global/send", authenticateToken, async (req, res) => {
   try {
-    const activeBans = await getActiveBans(senderNumber);
-    if (activeBans.includes("global") || activeBans.includes("login")) {
-      return res.status(403).json({ error: "You are banned from global chat." });
-    }
+    // 1. Extract variables FIRST
     const { senderNumber, username, body, type } = req.body;
 
+    // 2. THEN check for bans using optional chaining (?.)
+    const activeBans = await getActiveBans(senderNumber);
+    if (activeBans?.includes("global") || activeBans?.includes("login")) {
+      return res
+        .status(403)
+        .json({ error: "You are banned from global chat." });
+    }
     // Basic validation
     if (!body || body.length > 2000) {
       return res.status(400).json({ error: "Message too long" });
