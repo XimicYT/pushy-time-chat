@@ -51,65 +51,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
-// --- SETTINGS ROUTES ---
 
-// GET SETTINGS
-app.get("/settings/:myNumber", authenticateToken, async (req, res) => {
-  try {
-    if (req.user.phoneNumber !== req.params.myNumber)
-      return res.sendStatus(403);
-
-    // .limit(1) safely grabs the first match without crashing if there are duplicates
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("is_dark, accent, is_pattern")
-      .eq("phone_number", req.params.myNumber)
-      .limit(1);
-
-    if (error) throw error;
-    res.json(data && data.length > 0 ? data[0] : {});
-  } catch (error) {
-    console.error("Settings GET Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// UPDATE SETTINGS
-app.post("/settings/update", authenticateToken, async (req, res) => {
-  try {
-    const { phoneNumber, isDark, accent, isPattern } = req.body;
-
-    if (!phoneNumber) {
-      return res.status(400).json({ error: "Missing phone number" });
-    }
-
-    // UPSERT: Inserts a new row if the phone number doesn't exist,
-    // or updates the existing row if it does.
-    const { data, error } = await supabase
-      .from("users") // <-- Make sure this matches your DB table name
-      .upsert(
-        {
-          phone_number: phoneNumber, // <-- Primary key / Conflict column
-          is_dark: isDark,
-          accent: accent,
-          is_pattern: isPattern,
-        },
-        { onConflict: "phone_number" },
-      ); // <-- Tells Supabase what column to check for duplicates
-
-    if (error) {
-      console.error("Supabase Upsert Error:", error);
-      throw error;
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error("Settings Route Error:", err);
-    res
-      .status(500)
-      .json({ error: err.message || "Server Error saving settings" });
-  }
-});
 const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
 // --- GLOBAL CHAT VARIABLES ---
 let globalMessages = [];
@@ -300,34 +242,7 @@ async function ensureContactExists(owner, contact, defaultName) {
 
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
-// Replace this route in server.js
-app.post(
-  "/upload-image",
-  authenticateToken,
-  multer().single("image"),
-  async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No image provided" });
-      }
 
-      // Convert the image buffer to a base64 string for Cloudinary
-      const b64 = Buffer.from(req.file.buffer).toString("base64");
-      let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
-
-      // Upload to Cloudinary
-      const result = await cloudinary.uploader.upload(dataURI, {
-        folder: "chat_images", // Keeps your Cloudinary dashboard organized
-      });
-
-      // Send EXACTLY what the frontend expects: { url: "..." }
-      res.json({ url: result.secure_url });
-    } catch (error) {
-      console.error("Cloudinary Error:", error);
-      res.status(500).json({ error: error.message || "Image upload failed" });
-    }
-  },
-);
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
@@ -364,9 +279,6 @@ app.post("/register", async (req, res) => {
         phone_number: phoneNumber,
         push_sub: subscription,
         password_hash: hashedPassword,
-        is_dark: false, // --- NEW: Default dark mode
-        accent: "blue", // --- NEW: Default accent color
-        is_pattern: false, // --- NEW: Default background pattern
       })
       .select()
       .single();
@@ -379,12 +291,6 @@ app.post("/register", async (req, res) => {
       phoneNumber: data.phone_number,
       username: data.username,
       token: token,
-      settings: {
-        // --- NEW: Return default settings to client
-        is_dark: false,
-        accent: "blue",
-        is_pattern: false,
-      },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -435,70 +341,13 @@ app.post("/login", async (req, res) => {
       phoneNumber: user.phone_number,
       username: user.username,
       token: token,
-      settings: {
-        is_dark: user.is_dark || false,
-        accent: user.accent || "blue",
-        is_pattern: user.is_pattern || false,
-      },
     });
   } catch (error) {
     console.error("Login Error:", error);
     res.status(500).json({ error: "Login failed." });
   }
 });
-// --- SETTINGS ROUTES ---
 
-// 1. Get Settings
-app.get("/settings/:number", authenticateToken, async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("settings")
-      .select("*")
-      .eq("phone_number", req.params.number)
-      .single();
-
-    // PGRST116 means "No rows found". Instead of crashing, return the defaults!
-    if (error && error.code === "PGRST116") {
-      return res.json({ is_dark: true, accent: "blue", is_pattern: true });
-    }
-
-    if (error) throw error; // If it's a real error, throw it to the catch block
-
-    res.json(data);
-  } catch (e) {
-    console.error("Settings GET Error:", e);
-    // Send a 500 status so the client knows it failed, but KEEP THE SERVER ALIVE
-    res.status(500).json({ error: "Failed to fetch settings" });
-  }
-});
-
-// 2. Update Settings
-app.post("/settings/update", authenticateToken, async (req, res) => {
-  try {
-    const { phoneNumber, isDark, accent, isPattern } = req.body;
-
-    if (!phoneNumber) {
-      return res.status(400).json({ error: "Missing phone number" });
-    }
-
-    const { error } = await supabase.from("settings").upsert(
-      {
-        phone_number: phoneNumber,
-        is_dark: isDark,
-        accent: accent,
-        is_pattern: isPattern,
-      },
-      { onConflict: "phone_number" },
-    );
-
-    if (error) throw error;
-
-    res.json({ success: true });
-  } catch (e) {
-    console.error("Settings Update Error:", e);
-    res.status(500).json({ error: "Failed to update settings" });
-  }
-});
 // --- NEW ROUTE: UPLOAD IMAGE ---
 app.post(
   "/upload-image",
