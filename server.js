@@ -167,7 +167,19 @@ app.use(bodyParser.json({ limit: "10mb" }));
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   console.error("CRITICAL ERROR: Supabase Credentials missing.");
 }
+// --- ADMIN ROUTES ---
 
+// Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
+const ADMIN_NUMBERS = ["321777"]; 
+
+app.get("/admin/verify", authenticateToken, (req, res) => {
+  // req.user is set by your authenticateToken middleware
+  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) { // <-- Fix is here
+    res.json({ authorized: true });
+  } else {
+    res.status(403).json({ error: "Unauthorized: Not an admin" });
+  }
+});
 // --- SUPABASE & PUSH SETUP ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
