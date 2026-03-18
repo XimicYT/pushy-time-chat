@@ -464,7 +464,42 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// NEW ROUTE: Get Paginated Messages for a SPECIFIC Chat
+app.get(
+  "/messages/chat/:myNumber/:contactNumber",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      if (req.user.phoneNumber !== req.params.myNumber) {
+        return res.status(403).json({ error: "Access Denied" });
+      }
 
+      const { contactNumber } = req.params;
+      const offset = parseInt(req.query.offset) || 0;
+      const limit = parseInt(req.query.limit) || 500;
+
+      // Clean formatting just in case
+      const safeMyNum = String(req.params.myNumber).replace(/\D/g, "");
+      const safeContactNum = String(contactNumber).replace(/\D/g, "");
+
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .or(
+          `and(sender_number.eq.${safeMyNum},receiver_number.eq.${safeContactNum}),and(sender_number.eq.${safeContactNum},receiver_number.eq.${safeMyNum})`,
+        )
+        .order("timestamp", { ascending: false })
+        .range(offset, offset + limit - 1); // Supabase pagination!
+
+      if (error) throw error;
+
+      // Reverse so oldest is at the top, newest at bottom
+      res.json(data.reverse());
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  },
+);
 // 5. CONTACTS ADD
 
 app.post("/contacts/add", authenticateToken, async (req, res) => {
@@ -671,14 +706,17 @@ app.post("/global/send", authenticateToken, (req, res) => {
       return res.status(400).json({ error: "Message too long" });
     }
 
+    // In server.js inside app.post("/global/send", ...)
+
     const msg = {
-      id: Date.now(),
-      sender_number: senderNumber,
+      id: Date.now().toString(),
+      sender_number: senderNumber, // Crucial for your client's isMe check
+      senderNumber: senderNumber, // Added just in case your client checks camelCase
       sender_name: username || "Unknown",
-      // Use your existing safeClean function for text
       body: type === "text" ? safeClean(body) : body,
       type: type || "text",
-      timestamp: new Date().toISOString(),
+      created_at: new Date().toISOString(), // FIXES the "undefined" time!
+      timestamp: new Date().toISOString(), // Kept for backwards compatibility
     };
 
     globalMessages.push(msg);
