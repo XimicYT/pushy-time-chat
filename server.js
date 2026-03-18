@@ -56,14 +56,15 @@ const io = new Server(server, {
 // GET SETTINGS
 app.get("/settings/:myNumber", authenticateToken, async (req, res) => {
   try {
-    if (req.user.phoneNumber !== req.params.myNumber) return res.sendStatus(403);
-    
+    if (req.user.phoneNumber !== req.params.myNumber)
+      return res.sendStatus(403);
+
     // .limit(1) safely grabs the first match without crashing if there are duplicates
     const { data, error } = await supabase
       .from("profiles")
       .select("is_dark, accent, is_pattern")
       .eq("phone_number", req.params.myNumber)
-      .limit(1); 
+      .limit(1);
 
     if (error) throw error;
     res.json(data && data.length > 0 ? data[0] : {});
@@ -81,7 +82,7 @@ app.post("/settings/update", authenticateToken, async (req, res) => {
       .from("profiles")
       .update({ is_dark: isDark, accent: accent, is_pattern: isPattern })
       .eq("phone_number", req.user.phoneNumber);
-    
+
     if (error) throw error;
     res.json({ success: true });
   } catch (error) {
@@ -280,7 +281,6 @@ async function ensureContactExists(owner, contact, defaultName) {
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
 
-
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
@@ -317,9 +317,9 @@ app.post("/register", async (req, res) => {
         phone_number: phoneNumber,
         push_sub: subscription,
         password_hash: hashedPassword,
-        is_dark: false,     // --- NEW: Default dark mode
-        accent: "blue",     // --- NEW: Default accent color
-        is_pattern: false   // --- NEW: Default background pattern
+        is_dark: false, // --- NEW: Default dark mode
+        accent: "blue", // --- NEW: Default accent color
+        is_pattern: false, // --- NEW: Default background pattern
       })
       .select()
       .single();
@@ -332,11 +332,12 @@ app.post("/register", async (req, res) => {
       phoneNumber: data.phone_number,
       username: data.username,
       token: token,
-      settings: {           // --- NEW: Return default settings to client
+      settings: {
+        // --- NEW: Return default settings to client
         is_dark: false,
         accent: "blue",
-        is_pattern: false
-      }
+        is_pattern: false,
+      },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -390,15 +391,67 @@ app.post("/login", async (req, res) => {
       settings: {
         is_dark: user.is_dark || false,
         accent: user.accent || "blue",
-        is_pattern: user.is_pattern || false
-      }
+        is_pattern: user.is_pattern || false,
+      },
     });
   } catch (error) {
     console.error("Login Error:", error);
     res.status(500).json({ error: "Login failed." });
   }
 });
+// --- SETTINGS ROUTES ---
 
+// 1. Get Settings
+app.get("/settings/:number", authenticateToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("settings")
+      .select("*")
+      .eq("phone_number", req.params.number)
+      .single();
+
+    // PGRST116 means "No rows found". Instead of crashing, return the defaults!
+    if (error && error.code === "PGRST116") {
+      return res.json({ is_dark: true, accent: "blue", is_pattern: true });
+    }
+
+    if (error) throw error; // If it's a real error, throw it to the catch block
+
+    res.json(data);
+  } catch (e) {
+    console.error("Settings GET Error:", e);
+    // Send a 500 status so the client knows it failed, but KEEP THE SERVER ALIVE
+    res.status(500).json({ error: "Failed to fetch settings" });
+  }
+});
+
+// 2. Update Settings
+app.post("/settings/update", authenticateToken, async (req, res) => {
+  try {
+    const { phoneNumber, isDark, accent, isPattern } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({ error: "Missing phone number" });
+    }
+
+    const { error } = await supabase.from("settings").upsert(
+      {
+        phone_number: phoneNumber,
+        is_dark: isDark,
+        accent: accent,
+        is_pattern: isPattern,
+      },
+      { onConflict: "phone_number" },
+    );
+
+    if (error) throw error;
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("Settings Update Error:", e);
+    res.status(500).json({ error: "Failed to update settings" });
+  }
+});
 // --- NEW ROUTE: UPLOAD IMAGE ---
 app.post(
   "/upload-image",
