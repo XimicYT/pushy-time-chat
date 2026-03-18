@@ -138,10 +138,21 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     for (const [number, socketId] of onlineUsers.entries()) {
       if (socketId === socket.id) {
         onlineUsers.delete(number);
+
+        // NEW: Update last_online in the database when they disconnect
+        try {
+          await supabase
+            .from("profiles")
+            .update({ last_online: new Date().toISOString() })
+            .eq("phone_number", number);
+        } catch (err) {
+          console.error("Failed to update last_online on disconnect:", err);
+        }
+
         break;
       }
     }
@@ -300,7 +311,7 @@ app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
         username: user.username,
         phone_number: user.phone_number,
         created_at: user.created_at,
-        last_login: user.last_login || null, // We will build this tracker next!
+        last_online: user.last_online || null, // FIXED: Now using last_online!
       },
       contacts: contacts || [],
       stats: {
@@ -515,6 +526,7 @@ app.post("/register", async (req, res) => {
         phone_number: phoneNumber,
         push_sub: subscription,
         password_hash: hashedPassword,
+        last_online: new Date().toISOString(), // SETS INITIAL ONLINE TIME
       })
       .select()
       .single();
