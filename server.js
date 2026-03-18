@@ -260,6 +260,8 @@ app.get("/admin/stats", authenticateToken, async (req, res) => {
   }
 });
 // 4. Get List of Online Users
+// 4. Get List of Online Users
+// 4. Get List of Online Users
 app.get("/admin/online", authenticateToken, async (req, res) => {
   try {
     // Verify admin
@@ -273,9 +275,20 @@ app.get("/admin/online", authenticateToken, async (req, res) => {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    // Get phone numbers currently in the server's memory
-    const onlineNumbers = Array.from(onlineUsers.keys());
-    
+    // Aggregate exact statuses directly from connected sockets
+    const aggregated = {};
+    io.sockets.sockets.forEach((s) => {
+      if (s.user && s.user.phoneNumber) {
+        const num = s.user.phoneNumber;
+        // 'active' overrides 'away' if they have multiple tabs open
+        if (!aggregated[num] || s.userStatus === "active") {
+          aggregated[num] = s.userStatus || "active";
+        }
+      }
+    });
+
+    const onlineNumbers = Object.keys(aggregated);
+
     if (onlineNumbers.length === 0) {
       return res.json([]); // No one online
     }
@@ -287,8 +300,14 @@ app.get("/admin/online", authenticateToken, async (req, res) => {
       .in("phone_number", onlineNumbers);
 
     if (error) throw error;
-    res.json(data);
 
+    // Combine database profiles with their live memory status
+    const enhancedData = data.map((user) => ({
+      ...user,
+      status: aggregated[user.phone_number] || "active",
+    }));
+
+    res.json(enhancedData);
   } catch (err) {
     console.error("Admin Fetch Online Error:", err.message);
     res.status(500).json({ error: "Failed to fetch online users." });
