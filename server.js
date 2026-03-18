@@ -185,32 +185,12 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 const ADMIN_NUMBERS = ["321777"];
 
 // --- ADMIN ROUTES ---
-app.post("/admin/api/ban", authenticateToken, async (req, res) => {
+// --- ADMIN: BAN USER ROUTE ---
+app.post("/admin/api/ban", authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const adminPhone = req.body.adminNumber || req.user?.phoneNumber || req.user?.number;
+    // We no longer need to check if they are an admin here!
+    // The 'requireAdmin' middleware already verified their 'is_admin' status in the profiles table.
 
-    if (!adminPhone) {
-      return res.status(400).json({ error: "Missing admin phone number." });
-    }
-
-    // DIAGNOSTIC CHECK: Removing .single() to see exactly what Supabase returns
-    const { data: adminCheck, error: dbErr } = await supabase
-      .from("admins")
-      .select("*")
-      .eq("phone_number", adminPhone);
-
-    if (dbErr) {
-      return res.status(500).json({ error: "Supabase DB Error: " + dbErr.message });
-    }
-
-    // If the array is empty, Supabase couldn't find your number
-    if (!adminCheck || adminCheck.length === 0) {
-      return res.status(403).json({ 
-        error: `Unauthorized: Searched 'admins' table for '${adminPhone}' but found 0 matches. Check your database.` 
-      });
-    }
-
-    // --- The actual ban logic ---
     const { targetNumber, types, reason, days } = req.body;
 
     let expiresAt = null;
@@ -220,6 +200,7 @@ app.post("/admin/api/ban", authenticateToken, async (req, res) => {
       expiresAt = expiresAt.toISOString();
     }
 
+    // Insert the ban into the database
     const { error: insertErr } = await supabase.from("bans").insert({
       phone_number: targetNumber,
       types: types,
@@ -231,6 +212,7 @@ app.post("/admin/api/ban", authenticateToken, async (req, res) => {
         return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
     }
 
+    // Instantly force-kick the user via Socket.IO if they are logged in right now
     io.emit("user_banned", { targetNumber, types, reason });
 
     res.json({ success: true });
@@ -242,21 +224,26 @@ app.post("/admin/api/ban", authenticateToken, async (req, res) => {
 // 1. Verify Admin Status
 app.get("/admin/verify", authenticateToken, async (req, res) => {
   try {
-    // Check the database for the user's admin status
+    // Assuming your token payload includes the user's phone number or ID
+    const userIdentifier = req.user.phoneNumber; // or req.user.id, depending on your setup
+
     const { data, error } = await supabase
       .from("profiles")
       .select("is_admin")
-      .eq("phone_number", req.user.phoneNumber)
+      // Change 'phone_number' to 'id' if you use UUIDs to look up users
+      .eq("phone_number", userIdentifier) 
       .single();
 
-    if (error || !data || !data.is_admin) {
-      return res.status(403).json({ error: "Unauthorized: Not an admin" });
+    if (error || !data || data.is_admin !== true) {
+      return res.status(403).json({ error: "Server rejected admin access." });
     }
 
-    res.json({ authorized: true });
+    // If they made it here, they are a verified admin
+    res.status(200).json({ success: true, message: "Admin verified" });
+
   } catch (err) {
-    console.error("Admin Verify Error:", err.message);
-    res.status(500).json({ error: "Server error verifying admin status" });
+    console.error("Admin Verify Error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -512,6 +499,28 @@ function authenticateToken(req, res, next) {
     next();
   });
 }
+// Add this middleware function near your other config/middleware
+async function requireAdmin(req, res, next) {
+  try {
+    const userIdentifier = req.user.phoneNumber; // Again, adjust to your token structure
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", userIdentifier)
+      .single();
+
+    if (error || !data || data.is_admin !== true) {
+      return res.status(403).json({ error: "Unauthorized: Admin privileges required." });
+    }
+
+    next(); // They are an admin, proceed to the actual route!
+  } catch (err) {
+    res.status(500).json({ error: "Server error during admin validation" });
+  }
+}
+
+// Then, protect your ban route like this:
 
 async function ensureContactExists(owner, contact, defaultName) {
   try {
@@ -847,60 +856,7 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
   }
 });
 // --- ADMIN: BAN USER ROUTE ---
-app.post("/admin/api/ban", authenticateToken, async (req, res) => {
-  try {
-    const adminPhone = req.body.adminNumber || req.user?.phoneNumber || req.user?.number;
 
-    if (!adminPhone) {
-      return res.status(400).json({ error: "Missing admin phone number." });
-    }
-
-    // FIX: Look in 'profiles' table and select 'is_admin' instead of looking for an 'admins' table
-    const { data: adminCheck, error: dbErr } = await supabase
-      .from("profiles")
-      .select("is_admin")
-      .eq("phone_number", adminPhone);
-
-    if (dbErr) {
-      return res.status(500).json({ error: "Supabase DB Error: " + dbErr.message });
-    }
-
-    // If the array is empty (number not found) OR the user is NOT an admin
-    if (!adminCheck || adminCheck.length === 0 || adminCheck[0].is_admin !== true) {
-      return res.status(403).json({ 
-        error: "Unauthorized: You do not have admin privileges." 
-      });
-    }
-
-    // --- The actual ban logic ---
-    const { targetNumber, types, reason, days } = req.body;
-
-    let expiresAt = null;
-    if (days !== -1) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + days);
-      expiresAt = expiresAt.toISOString();
-    }
-
-    const { error: insertErr } = await supabase.from("bans").insert({
-      phone_number: targetNumber,
-      types: types,
-      reason: reason,
-      expires_at: expiresAt,
-    });
-
-    if (insertErr) {
-        return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
-    }
-
-    io.emit("user_banned", { targetNumber, types, reason });
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Ban Error:", error);
-    res.status(500).json({ error: "Server Catch: " + error.message });
-  }
-});
 // NEW ROUTE: Get Paginated Messages for a SPECIFIC Chat
 app.get(
   "/messages/chat/:myNumber/:contactNumber",
@@ -939,55 +895,7 @@ app.get(
 );
 // 5. CONTACTS ADD
 
-app.post("/admin/api/ban", authenticateToken, async (req, res) => {
-  try {
-    // FIX: Grab the admin number from the body (which we added to the frontend)
-    // or fallback to possible token properties.
-    const adminPhone =
-      req.body.adminNumber || req.user?.phoneNumber || req.user?.number;
 
-    if (!adminPhone) {
-      return res
-        .status(400)
-        .json({ error: "Could not identify admin number from request." });
-    }
-
-    // Verify admin calling the route
-    const { data: adminCheck } = await supabase
-      .from("admins")
-      .select("*")
-      .eq("phone_number", adminPhone)
-      .single();
-
-    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
-
-    const { targetNumber, types, reason, days } = req.body;
-
-    let expiresAt = null;
-    if (days !== -1) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + days);
-      expiresAt = expiresAt.toISOString();
-    }
-
-    const { error } = await supabase.from("bans").insert({
-      phone_number: targetNumber,
-      types: types,
-      reason: reason,
-      expires_at: expiresAt,
-    });
-
-    if (error) throw error;
-
-    // Instantly force-kick the user via Socket.IO if they are logged in right now
-    io.emit("user_banned", { targetNumber, types, reason });
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Ban Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // GET CONTACTS
 app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
