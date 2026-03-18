@@ -220,20 +220,6 @@ app.get("/admin/users", authenticateToken, requireAdmin, async (req, res) => {
     }
 });
 
-// 3. Delete User
-app.delete("/admin/users/:number", authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const target = req.params.number;
-        if (ADMIN_NUMBERS.includes(target)) return res.status(403).json({error: "Cannot delete an admin."});
-
-        const { error } = await supabase.from("profiles").delete().eq("phone_number", target);
-        if (error) throw error;
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // 4. Get System Stats
 app.get("/admin/stats", authenticateToken, requireAdmin, async (req, res) => {
     try {
