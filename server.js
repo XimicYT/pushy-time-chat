@@ -171,7 +171,7 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 // Get all users for admin dashboard
 
 // Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
-const ADMIN_NUMBERS = ["321777"]; 
+const ADMIN_NUMBERS = ["321777"];
 
 // --- ADMIN ROUTES ---
 
@@ -221,6 +221,42 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error("Admin Fetch Users Error:", err.message);
     res.status(500).json({ error: "Failed to fetch user list." });
+  }
+});
+// 3. Get Dashboard Analytics
+app.get("/admin/stats", authenticateToken, async (req, res) => {
+  try {
+    // 1. Verify admin status
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", req.user.phoneNumber)
+      .single();
+
+    if (adminError || !adminData || !adminData.is_admin) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // 2. Get Total Users (Fast count method)
+    const { count: totalUsers, error: countError } = await supabase
+      .from("profiles")
+      .select("*", { count: "exact", head: true });
+
+    if (countError) throw countError;
+
+    // 3. Get Live Data from Server Memory
+    const onlineCount = onlineUsers.size;
+    const globalChatCount = globalMessages.length;
+
+    // 4. Send it back
+    res.json({
+      totalUsers: totalUsers || 0,
+      onlineCount: onlineCount,
+      globalChatCount: globalChatCount,
+    });
+  } catch (err) {
+    console.error("Admin Fetch Stats Error:", err.message);
+    res.status(500).json({ error: "Failed to fetch stats." });
   }
 });
 // --- SUPABASE & PUSH SETUP ---
@@ -626,7 +662,7 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
         contact_number: contactNumber,
         nickname: safeClean(nickname), // Changed from custom_name to nickname based on ensureContactExists
       },
-      { onConflict: "owner_number, contact_number" }
+      { onConflict: "owner_number, contact_number" },
     );
 
     if (insertError1) {
@@ -641,7 +677,7 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
         contact_number: ownerNumber,
         nickname: ownerUser ? ownerUser.username : "New Contact", // Changed from custom_name
       },
-      { onConflict: "owner_number, contact_number" }
+      { onConflict: "owner_number, contact_number" },
     );
 
     if (insertError2) {
