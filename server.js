@@ -92,7 +92,7 @@ io.on("connection", (socket) => {
   const phoneNumber = socket.user.phoneNumber;
   onlineUsers.set(phoneNumber, socket.id);
   console.log(`User ${phoneNumber} connected (Auth Verified).`);
-
+  io.emit("update_online_users", Array.from(onlineUsers.keys()));
   socket.on("typing", (data) => {
     const { receiver } = data;
     const receiverSocket = onlineUsers.get(receiver);
@@ -110,6 +110,7 @@ io.on("connection", (socket) => {
         break;
       }
     }
+    io.emit("update_online_users", Array.from(onlineUsers.keys()));
   });
 });
 
