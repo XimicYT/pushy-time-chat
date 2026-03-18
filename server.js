@@ -300,7 +300,34 @@ async function ensureContactExists(owner, contact, defaultName) {
 
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
+// Replace this route in server.js
+app.post(
+  "/upload-image",
+  authenticateToken,
+  multer().single("image"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No image provided" });
+      }
 
+      // Convert the image buffer to a base64 string for Cloudinary
+      const b64 = Buffer.from(req.file.buffer).toString("base64");
+      let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
+
+      // Upload to Cloudinary
+      const result = await cloudinary.uploader.upload(dataURI, {
+        folder: "chat_images", // Keeps your Cloudinary dashboard organized
+      });
+
+      // Send EXACTLY what the frontend expects: { url: "..." }
+      res.json({ url: result.secure_url });
+    } catch (error) {
+      console.error("Cloudinary Error:", error);
+      res.status(500).json({ error: error.message || "Image upload failed" });
+    }
+  },
+);
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
