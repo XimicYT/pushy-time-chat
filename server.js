@@ -185,7 +185,44 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 const ADMIN_NUMBERS = ["321777"];
 
 // --- ADMIN ROUTES ---
+app.post("/admin/api/ban", authenticateToken, async (req, res) => {
+  try {
+    const adminPhone = req.user.phoneNumber;
 
+    // Verify admin calling the route
+    const { data: adminCheck } = await supabase
+      .from("admins")
+      .select("*")
+      .eq("phone_number", adminPhone)
+      .single();
+    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+
+    const { targetNumber, types, reason, days } = req.body;
+
+    let expiresAt = null;
+    if (days !== -1) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + days);
+      expiresAt = expiresAt.toISOString();
+    }
+
+    const { error } = await supabase.from("bans").insert({
+      phone_number: targetNumber,
+      types: types,
+      reason: reason,
+      expires_at: expiresAt,
+    });
+
+    if (error) throw error;
+
+    // Instantly force-kick the user via Socket.IO if they are logged in right now
+    io.emit("user_banned", { targetNumber, types, reason });
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 // 1. Verify Admin Status
 app.get("/admin/verify", authenticateToken, async (req, res) => {
   try {
@@ -489,7 +526,26 @@ async function ensureContactExists(owner, contact, defaultName) {
 
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
+// --- BAN SYSTEM HELPER ---
+async function getActiveBans(phoneNumber) {
+  const { data: bans, error } = await supabase
+    .from("bans")
+    .select("types, expires_at")
+    .eq("phone_number", phoneNumber);
 
+  if (error || !bans) return [];
+
+  const now = new Date();
+  let activeTypes = new Set();
+
+  bans.forEach((ban) => {
+    if (!ban.expires_at || new Date(ban.expires_at) > now) {
+      ban.types.forEach((type) => activeTypes.add(type));
+    }
+  });
+
+  return Array.from(activeTypes);
+}
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
@@ -582,7 +638,12 @@ app.post("/login", async (req, res) => {
         .update({ push_sub: subscription })
         .eq("phone_number", user.phone_number);
     }
-
+    const activeBans = await getActiveBans(user.phone_number);
+    if (activeBans.includes("login")) {
+      return res
+        .status(403)
+        .json({ error: "Your account is banned from accessing the app." });
+    }
     const token = jwt.sign({ phoneNumber: user.phone_number }, JWT_SECRET);
     try {
       await supabase
@@ -633,6 +694,10 @@ app.post(
 // 4. SEND MESSAGE (Protected & Updated for Images)
 app.post("/send-message", authenticateToken, async (req, res) => {
   try {
+    const activeBans = await getActiveBans(senderNumber);
+    if (activeBans.includes("private") || activeBans.includes("login")) {
+      return res.status(403).json({ error: "You are banned from private messaging." });
+    }
     // Accepts 'type' now. Default to 'text'.
     let { senderNumber, receiverNumber, body, type } = req.body;
 
@@ -1008,8 +1073,12 @@ app.get("/global/messages", (req, res) => {
 });
 
 // 2. Send Global Message (Protected)
-app.post("/global/send", authenticateToken, (req, res) => {
+app.post("/global/send", authenticateToken, async (req, res) => {
   try {
+    const activeBans = await getActiveBans(senderNumber);
+    if (activeBans.includes("global") || activeBans.includes("login")) {
+      return res.status(403).json({ error: "You are banned from global chat." });
+    }
     const { senderNumber, username, body, type } = req.body;
 
     // Basic validation
