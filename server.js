@@ -578,38 +578,55 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
 
     if (req.user.phoneNumber !== ownerNumber) return res.sendStatus(403);
 
-    const { data: contactUser } = await supabase
+    // 1. Verify the contact exists
+    const { data: contactUser, error: contactError } = await supabase
       .from("profiles")
       .select("username")
       .eq("phone_number", contactNumber)
       .single();
-    if (!contactUser)
-      return res.status(404).json({ error: "User ID not found" });
 
+    if (contactError || !contactUser) {
+      return res.status(404).json({ error: "User ID not found" });
+    }
+
+    // 2. Get owner's info
     const { data: ownerUser } = await supabase
       .from("profiles")
       .select("username")
       .eq("phone_number", ownerNumber)
       .single();
 
-    await supabase.from("contacts").upsert(
+    // 3. Add to Owner's contact list
+    const { error: insertError1 } = await supabase.from("contacts").upsert(
       {
         owner_number: ownerNumber,
         contact_number: contactNumber,
-        custom_name: safeClean(nickname),
+        nickname: safeClean(nickname), // Changed from custom_name to nickname based on ensureContactExists
       },
-      { onConflict: "owner_number, contact_number" },
+      { onConflict: "owner_number, contact_number" }
     );
 
-    await supabase.from("contacts").upsert(
+    if (insertError1) {
+      console.error("Insert Error 1:", insertError1);
+      throw new Error("Database error adding contact.");
+    }
+
+    // 4. Add to Contact's list (so they can see who added them)
+    const { error: insertError2 } = await supabase.from("contacts").upsert(
       {
         owner_number: contactNumber,
         contact_number: ownerNumber,
-        custom_name: ownerUser ? ownerUser.username : "New Contact",
+        nickname: ownerUser ? ownerUser.username : "New Contact", // Changed from custom_name
       },
-      { onConflict: "owner_number, contact_number" },
+      { onConflict: "owner_number, contact_number" }
     );
 
+    if (insertError2) {
+      console.error("Insert Error 2:", insertError2);
+      // We don't throw here, as the primary add succeeded. Just log it.
+    }
+
+    // 5. Notify the contact via socket
     const contactSocketId = onlineUsers.get(contactNumber);
     if (contactSocketId) {
       io.to(contactSocketId).emit("refresh_contacts");
@@ -617,6 +634,7 @@ app.post("/contacts/add", authenticateToken, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
+    console.error("/contacts/add Route Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
