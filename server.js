@@ -88,11 +88,46 @@ io.use((socket, next) => {
   });
 });
 
+// --- NEW: Helper function to calculate and broadcast detailed statuses ---
+function broadcastStatuses() {
+  const aggregated = {};
+
+  // Loop through all connected sockets
+  io.sockets.sockets.forEach((s) => {
+    if (s.user && s.user.phoneNumber) {
+      const num = s.user.phoneNumber;
+      // If a user has multiple tabs open, 'active' overrides 'away'
+      if (!aggregated[num] || s.userStatus === "active") {
+        aggregated[num] = s.userStatus || "active"; // Default to active
+      }
+    }
+  });
+
+  // Send the dictionary of statuses to everyone
+  io.emit("online_statuses", aggregated);
+}
+
 io.on("connection", (socket) => {
   const phoneNumber = socket.user.phoneNumber;
   onlineUsers.set(phoneNumber, socket.id);
+
+  // Default status on connection
+  socket.userStatus = "active";
+
   console.log(`User ${phoneNumber} connected (Auth Verified).`);
+
+  // Legacy emit (kept just in case your other code needs it)
   io.emit("update_online_users", Array.from(onlineUsers.keys()));
+
+  // New detailed status emit
+  broadcastStatuses();
+
+  // Listen for active/away tab changes from the client
+  socket.on("update_status", (status) => {
+    socket.userStatus = status;
+    broadcastStatuses();
+  });
+
   socket.on("typing", (data) => {
     const { receiver } = data;
     const receiverSocket = onlineUsers.get(receiver);
@@ -111,6 +146,9 @@ io.on("connection", (socket) => {
       }
     }
     io.emit("update_online_users", Array.from(onlineUsers.keys()));
+
+    // Broadcast statuses again so everyone knows this user left
+    broadcastStatuses();
   });
 });
 
