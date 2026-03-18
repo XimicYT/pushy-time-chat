@@ -169,17 +169,51 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 }
 // --- ADMIN ROUTES ---
 // Get all users for admin dashboard
-app.get("/admin/users", authenticateToken, async (req, res) => {
-  // 1. Verify admin identity securely
-  if (!ADMIN_NUMBERS.includes(req.user.phoneNumber)) { 
-    return res.status(403).json({ error: "Unauthorized: Not an admin" });
-  }
 
+// Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
+const ADMIN_NUMBERS = ["321777"]; 
+
+// --- ADMIN ROUTES ---
+
+// 1. Verify Admin Status
+app.get("/admin/verify", authenticateToken, async (req, res) => {
   try {
-    // 2. Fetch profiles from Supabase (excluding password hashes for security)
+    // Check the database for the user's admin status
     const { data, error } = await supabase
       .from("profiles")
-      .select("id, username, phone_number, created_at")
+      .select("is_admin")
+      .eq("phone_number", req.user.phoneNumber)
+      .single();
+
+    if (error || !data || !data.is_admin) {
+      return res.status(403).json({ error: "Unauthorized: Not an admin" });
+    }
+
+    res.json({ authorized: true });
+  } catch (err) {
+    console.error("Admin Verify Error:", err.message);
+    res.status(500).json({ error: "Server error verifying admin status" });
+  }
+});
+
+// 2. Get all users for admin dashboard
+app.get("/admin/users", authenticateToken, async (req, res) => {
+  try {
+    // Securely verify admin identity from DB again before returning sensitive data
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", req.user.phoneNumber)
+      .single();
+
+    if (adminError || !adminData || !adminData.is_admin) {
+      return res.status(403).json({ error: "Unauthorized: Not an admin" });
+    }
+
+    // Fetch profiles from Supabase (excluding password hashes)
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, username, phone_number, created_at, is_admin") // Also grabbing is_admin here just in case!
       .order("created_at", { ascending: false });
 
     if (error) throw error;
@@ -187,17 +221,6 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error("Admin Fetch Users Error:", err.message);
     res.status(500).json({ error: "Failed to fetch user list." });
-  }
-});
-// Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
-const ADMIN_NUMBERS = ["321777"]; 
-
-app.get("/admin/verify", authenticateToken, (req, res) => {
-  // req.user is set by your authenticateToken middleware
-  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) { // <-- Fix is here
-    res.json({ authorized: true });
-  } else {
-    res.status(403).json({ error: "Unauthorized: Not an admin" });
   }
 });
 // --- SUPABASE & PUSH SETUP ---
