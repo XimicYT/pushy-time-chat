@@ -190,84 +190,15 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
   }
 });
 // Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
-// --- ADMIN ROUTES ---
-const ADMIN_NUMBERS = ["321777"]; // Ensure your number is here
+const ADMIN_NUMBERS = ["321777"]; 
 
-// Reusable Admin Middleware
-function requireAdmin(req, res, next) {
-    if (!ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
-        return res.status(403).json({ error: "Unauthorized: Not an admin" });
-    }
-    next();
-}
-
-// 1. Verify Access (Used for initial page load)
-app.get("/admin/verify", authenticateToken, requireAdmin, (req, res) => {
+app.get("/admin/verify", authenticateToken, (req, res) => {
+  // req.user is set by your authenticateToken middleware
+  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) { // <-- Fix is here
     res.json({ authorized: true });
-});
-
-// 2. Get All Users
-app.get("/admin/users", authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from("profiles")
-            .select("id, username, phone_number, created_at")
-            .order("created_at", { ascending: false });
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 4. Get System Stats
-app.get("/admin/stats", authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const { count: userCount } = await supabase.from("profiles").select("*", { count: 'exact', head: true });
-        const { count: msgCount } = await supabase.from("messages").select("*", { count: 'exact', head: true });
-
-        res.json({
-            onlineUsers: onlineUsers.size,
-            totalUsers: userCount || 0,
-            totalMessages: msgCount || 0,
-            globalMessagesCount: globalMessages.length
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 5. Get All Message Logs (Platform-wide moderation)
-app.get("/admin/logs", authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from("messages")
-            .select("*")
-            .order("timestamp", { ascending: false })
-            .limit(100); // Last 100 messages
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 6. Delete Specific Message
-app.delete("/admin/messages/:id", authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const { error } = await supabase.from("messages").delete().eq("id", req.params.id);
-        if (error) throw error;
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 7. Clear Global Chat
-app.post("/admin/global/clear", authenticateToken, requireAdmin, (req, res) => {
-    globalMessages = []; // Wipe server memory
-    io.emit("global_reset"); // Tell all clients to wipe screens
-    res.json({ success: true });
+  } else {
+    res.status(403).json({ error: "Unauthorized: Not an admin" });
+  }
 });
 // --- SUPABASE & PUSH SETUP ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
