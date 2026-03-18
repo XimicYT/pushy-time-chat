@@ -185,45 +185,64 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 const ADMIN_NUMBERS = ["321777"];
 
 // --- ADMIN ROUTES ---
-app.post(
-  "/admin/api/ban",
-  authenticateToken,
-  requireAdmin,
-  async (req, res) => {
-    try {
-      const { targetNumber, types, reason, days } = req.body;
+// --- ADMIN: BAN USER ROUTE ---
+app.post("/admin/api/ban", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { targetNumber, types, reason, days } = req.body;
 
-      let expiresAt = null;
-      if (days !== -1) {
-        expiresAt = new Date();
-        expiresAt.setDate(expiresAt.getDate() + days);
-        expiresAt = expiresAt.toISOString();
-      }
+    // 1. DELETE any existing bans for this user. 
+    // This prevents duplicate bans and allows us to seamlessly "overwrite" 
+    // their ban to extend, shorten, or change the ban types.
+    await supabase.from("bans").delete().eq("phone_number", targetNumber);
 
-      // Insert the ban into the database
-      const { error: insertErr } = await supabase.from("bans").insert({
-        phone_number: targetNumber,
-        ban_types: types, // <-- FIXED: Mapped to the correct column name
-        reason: reason,
-        expires_at: expiresAt,
-      });
-
-      if (insertErr) {
-        return res
-          .status(500)
-          .json({ error: "Insert Ban Error: " + insertErr.message });
-      }
-
-      // Instantly force-kick the user via Socket.IO if they are logged in right now
-      io.emit("user_banned", { targetNumber, types, reason });
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Ban Error:", error);
-      res.status(500).json({ error: "Server Catch: " + error.message });
+    // 2. CHECK FOR UNBAN
+    // If you send an empty array of types, or set days to 0, it acts as a full unban!
+    if (!types || types.length === 0 || days === 0) {
+      return res.json({ success: true, message: "User unbanned successfully." });
     }
-  },
-);
+
+    // 3. CALCULATE EXPIRATION
+    let expiresAt = null;
+    if (days !== -1) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + days);
+      expiresAt = expiresAt.toISOString();
+    }
+
+    // 4. INSERT THE NEW BAN
+    const { error: insertErr } = await supabase.from("bans").insert({
+      phone_number: targetNumber,
+      ban_types: types,
+      reason: reason,
+      expires_at: expiresAt,
+    });
+
+    if (insertErr) {
+        return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
+    }
+
+    // 5. REAL-TIME ENFORCEMENT
+    // Find if the user is currently online and connected to the socket
+    const targetSocketId = onlineUsers.get(targetNumber);
+    if (targetSocketId) {
+      const targetSocket = io.sockets.sockets.get(targetSocketId);
+      if (targetSocket) {
+        // Send a direct event to that specific user's device
+        targetSocket.emit("user_banned_event", { types, reason });
+        
+        // If it's a login/app ban, forcefully sever their server connection right now
+        if (types.includes("login")) {
+          targetSocket.disconnect(true);
+        }
+      }
+    }
+
+    res.json({ success: true, message: "Ban updated successfully." });
+  } catch (error) {
+    console.error("Ban Error:", error);
+    res.status(500).json({ error: "Server Catch: " + error.message });
+  }
+});
 // 1. Verify Admin Status
 app.get("/admin/verify", authenticateToken, async (req, res) => {
   try {
