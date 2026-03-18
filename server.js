@@ -259,6 +259,41 @@ app.get("/admin/stats", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch stats." });
   }
 });
+// 4. Get List of Online Users
+app.get("/admin/online", authenticateToken, async (req, res) => {
+  try {
+    // Verify admin
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", req.user.phoneNumber)
+      .single();
+
+    if (adminError || !adminData || !adminData.is_admin) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Get phone numbers currently in the server's memory
+    const onlineNumbers = Array.from(onlineUsers.keys());
+    
+    if (onlineNumbers.length === 0) {
+      return res.json([]); // No one online
+    }
+
+    // Fetch the usernames for those phone numbers
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("username, phone_number")
+      .in("phone_number", onlineNumbers);
+
+    if (error) throw error;
+    res.json(data);
+
+  } catch (err) {
+    console.error("Admin Fetch Online Error:", err.message);
+    res.status(500).json({ error: "Failed to fetch online users." });
+  }
+});
 // --- SUPABASE & PUSH SETUP ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
