@@ -25,6 +25,48 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use(limiter);
+// --- IN-MEMORY SERVER LOGGER ---
+const serverLogs = [];
+const MAX_LOGS = 200; // Keep the last 200 logs so we don't run out of memory
+
+function captureLog(type, args) {
+  const msg = Array.from(args).map(a => 
+    typeof a === 'object' ? JSON.stringify(a) : String(a)
+  ).join(' ');
+  
+  serverLogs.push({ time: new Date().toISOString(), type, msg });
+  if (serverLogs.length > MAX_LOGS) serverLogs.shift();
+}
+
+// Intercept standard console outputs
+const originalLog = console.log;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+console.log = function(...args) { captureLog('INFO', args); originalLog.apply(console, args); };
+console.error = function(...args) { captureLog('ERROR', args); originalError.apply(console, args); };
+console.warn = function(...args) { captureLog('WARN', args); originalWarn.apply(console, args); };
+
+// --- ADMIN ROUTES ---
+// (Replace your existing /admin/verify with this updated block)
+
+const ADMIN_NUMBERS = ["321777"]; // Add your admin numbers here
+
+app.get("/admin/verify", authenticateToken, (req, res) => {
+  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
+    res.json({ authorized: true });
+  } else {
+    res.status(403).json({ error: "Unauthorized: Not an admin" });
+  }
+});
+
+app.get("/admin/logs", authenticateToken, (req, res) => {
+  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
+    res.json(serverLogs);
+  } else {
+    res.status(403).json({ error: "Unauthorized" });
+  }
+});
 
 // --- CONFIGURATION ---
 const JWT_SECRET =
@@ -244,18 +286,7 @@ async function ensureContactExists(owner, contact, defaultName) {
 app.get("/", (req, res) => res.json({ status: "online" }));
 // --- ADMIN ROUTES ---
 
-// Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
-const ADMIN_NUMBERS = ["321777"];
 
-app.get("/admin/verify", authenticateToken, (req, res) => {
-  // req.user is set by your authenticateToken middleware
-  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
-    // <-- Fix is here
-    res.json({ authorized: true });
-  } else {
-    res.status(403).json({ error: "Unauthorized: Not an admin" });
-  }
-});
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
