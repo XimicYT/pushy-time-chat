@@ -185,42 +185,45 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 const ADMIN_NUMBERS = ["321777"];
 
 // --- ADMIN ROUTES ---
-// --- ADMIN: BAN USER ROUTE ---
-app.post("/admin/api/ban", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    // We no longer need to check if they are an admin here!
-    // The 'requireAdmin' middleware already verified their 'is_admin' status in the profiles table.
+app.post(
+  "/admin/api/ban",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { targetNumber, types, reason, days } = req.body;
 
-    const { targetNumber, types, reason, days } = req.body;
+      let expiresAt = null;
+      if (days !== -1) {
+        expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + days);
+        expiresAt = expiresAt.toISOString();
+      }
 
-    let expiresAt = null;
-    if (days !== -1) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + days);
-      expiresAt = expiresAt.toISOString();
+      // Insert the ban into the database
+      const { error: insertErr } = await supabase.from("bans").insert({
+        phone_number: targetNumber,
+        ban_types: types, // <-- FIXED: Mapped to the correct column name
+        reason: reason,
+        expires_at: expiresAt,
+      });
+
+      if (insertErr) {
+        return res
+          .status(500)
+          .json({ error: "Insert Ban Error: " + insertErr.message });
+      }
+
+      // Instantly force-kick the user via Socket.IO if they are logged in right now
+      io.emit("user_banned", { targetNumber, types, reason });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Ban Error:", error);
+      res.status(500).json({ error: "Server Catch: " + error.message });
     }
-
-    // Insert the ban into the database
-    const { error: insertErr } = await supabase.from("bans").insert({
-      phone_number: targetNumber,
-      types: types,
-      reason: reason,
-      expires_at: expiresAt,
-    });
-
-    if (insertErr) {
-        return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
-    }
-
-    // Instantly force-kick the user via Socket.IO if they are logged in right now
-    io.emit("user_banned", { targetNumber, types, reason });
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Ban Error:", error);
-    res.status(500).json({ error: "Server Catch: " + error.message });
-  }
-});
+  },
+);
 // 1. Verify Admin Status
 app.get("/admin/verify", authenticateToken, async (req, res) => {
   try {
@@ -231,7 +234,7 @@ app.get("/admin/verify", authenticateToken, async (req, res) => {
       .from("profiles")
       .select("is_admin")
       // Change 'phone_number' to 'id' if you use UUIDs to look up users
-      .eq("phone_number", userIdentifier) 
+      .eq("phone_number", userIdentifier)
       .single();
 
     if (error || !data || data.is_admin !== true) {
@@ -240,7 +243,6 @@ app.get("/admin/verify", authenticateToken, async (req, res) => {
 
     // If they made it here, they are a verified admin
     res.status(200).json({ success: true, message: "Admin verified" });
-
   } catch (err) {
     console.error("Admin Verify Error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -511,7 +513,9 @@ async function requireAdmin(req, res, next) {
       .single();
 
     if (error || !data || data.is_admin !== true) {
-      return res.status(403).json({ error: "Unauthorized: Admin privileges required." });
+      return res
+        .status(403)
+        .json({ error: "Unauthorized: Admin privileges required." });
     }
 
     next(); // They are an admin, proceed to the actual route!
@@ -557,7 +561,7 @@ async function getActiveBans(phoneNumber) {
 
   const { data: bans, error } = await supabase
     .from("bans")
-    .select("types, expires_at")
+    .select("ban_types, expires_at")
     .eq("phone_number", phoneNumber);
 
   if (error || !bans) return [];
@@ -894,8 +898,6 @@ app.get(
   },
 );
 // 5. CONTACTS ADD
-
-
 
 // GET CONTACTS
 app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
