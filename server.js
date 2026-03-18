@@ -187,16 +187,30 @@ const ADMIN_NUMBERS = ["321777"];
 // --- ADMIN ROUTES ---
 app.post("/admin/api/ban", authenticateToken, async (req, res) => {
   try {
-    const adminPhone = req.user.phoneNumber;
+    const adminPhone = req.body.adminNumber || req.user?.phoneNumber || req.user?.number;
 
-    // Verify admin calling the route
-    const { data: adminCheck } = await supabase
+    if (!adminPhone) {
+      return res.status(400).json({ error: "Missing admin phone number." });
+    }
+
+    // DIAGNOSTIC CHECK: Removing .single() to see exactly what Supabase returns
+    const { data: adminCheck, error: dbErr } = await supabase
       .from("admins")
       .select("*")
-      .eq("phone_number", adminPhone)
-      .single();
-    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+      .eq("phone_number", adminPhone);
 
+    if (dbErr) {
+      return res.status(500).json({ error: "Supabase DB Error: " + dbErr.message });
+    }
+
+    // If the array is empty, Supabase couldn't find your number
+    if (!adminCheck || adminCheck.length === 0) {
+      return res.status(403).json({ 
+        error: `Unauthorized: Searched 'admins' table for '${adminPhone}' but found 0 matches. Check your database.` 
+      });
+    }
+
+    // --- The actual ban logic ---
     const { targetNumber, types, reason, days } = req.body;
 
     let expiresAt = null;
@@ -206,21 +220,23 @@ app.post("/admin/api/ban", authenticateToken, async (req, res) => {
       expiresAt = expiresAt.toISOString();
     }
 
-    const { error } = await supabase.from("bans").insert({
+    const { error: insertErr } = await supabase.from("bans").insert({
       phone_number: targetNumber,
       types: types,
       reason: reason,
       expires_at: expiresAt,
     });
 
-    if (error) throw error;
+    if (insertErr) {
+        return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
+    }
 
-    // Instantly force-kick the user via Socket.IO if they are logged in right now
     io.emit("user_banned", { targetNumber, types, reason });
 
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("Ban Error:", error);
+    res.status(500).json({ error: "Server Catch: " + error.message });
   }
 });
 // 1. Verify Admin Status
