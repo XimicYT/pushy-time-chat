@@ -265,26 +265,46 @@ app.get("/admin/stats", authenticateToken, async (req, res) => {
 app.get("/admin/online", authenticateToken, async (req, res) => {
   if (req.user.number !== ADMIN_NUMBER) return res.sendStatus(403);
 
-  const onlineUsers = [];
-  
-  // Map through ALL connected sockets
-  for (const [socketId, socket] of io.sockets.sockets) {
-    // Check multiple common ways you might be saving the user's info to the socket
-    const phone = socket.userNumber || socket.number || socket.userId || "Unknown Connection";
-    const name = socket.username || socket.name || "Anonymous";
+  try {
+    const onlineUsers = [];
     
-    // Pull the status from our global userStatuses object (if it exists)
-    const currentStatus = userStatuses[phone] || "active";
+    // Safely get all connected sockets regardless of Socket.io version
+    let allSockets = [];
+    if (typeof io.fetchSockets === 'function') {
+        allSockets = await io.fetchSockets(); // For modern Socket.io
+    } else if (io.sockets && io.sockets.sockets && typeof io.sockets.sockets.values === 'function') {
+        allSockets = Array.from(io.sockets.sockets.values()); 
+    } else {
+        // Fallback for older versions
+        allSockets = Object.values(io.sockets.sockets || io.sockets.connected || {});
+    }
 
-    onlineUsers.push({
-      id: socketId,
-      phone_number: phone,
-      username: name,
-      status: currentStatus 
-    });
+    for (const socket of allSockets) {
+      // Look for the user's data on the socket object
+      const phone = socket.userNumber || socket.number || socket.userId || "Unknown Connection";
+      const name = socket.username || socket.name || "Anonymous";
+      
+      // Safely check for status without throwing an undefined crash
+      let currentStatus = "active";
+      if (typeof userStatuses !== "undefined" && userStatuses[phone]) {
+          currentStatus = userStatuses[phone]; // If you added it globally
+      } else if (socket.status) {
+          currentStatus = socket.status; // If saved directly to the socket
+      }
+
+      onlineUsers.push({
+        id: socket.id,
+        phone_number: phone,
+        username: name,
+        status: currentStatus 
+      });
+    }
+    
+    res.json(onlineUsers);
+  } catch (error) {
+    console.error("Admin Online Users Error:", error);
+    res.status(500).json({ error: "Server error fetching users" });
   }
-  
-  res.json(onlineUsers);
 });
 // --- SUPABASE & PUSH SETUP ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
