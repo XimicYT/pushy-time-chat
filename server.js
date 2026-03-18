@@ -877,7 +877,22 @@ app.post("/send-message", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
+// --- NEW: CHECK BANS ON PAGE LOAD ---
+app.get("/check-bans", authenticateToken, async (req, res) => {
+  try {
+    // Get the securely verified number from the token
+    const secureNumber = req.user.phoneNumber || req.user.number;
+    
+    // Fetch their active bans
+    const activeBans = await getActiveBans(secureNumber);
+    
+    // Send the array of bans back to the frontend
+    res.json({ bans: activeBans });
+  } catch (e) {
+    console.error("Failed to check bans:", e);
+    res.status(500).json({ error: "Failed to check bans" });
+  }
+});
 // GET MESSAGES
 app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
   try {
