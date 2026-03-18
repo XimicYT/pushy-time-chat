@@ -255,7 +255,7 @@ app.post("/register", async (req, res) => {
       token: token,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(10000).json({ error: error.message });
   }
 });
 
