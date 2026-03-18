@@ -224,54 +224,69 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
   }
 });
 // GET Detailed User Profile for Admin
-app.get("/admin/api/user/:id", async (req, res) => {
-  // Make sure you add your admin authentication middleware here!
+// GET Detailed User Profile for Admin
+app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
   const userId = req.params.id;
 
   try {
-    // 1. Get base user info (Adjust query to match your DB)
-    const user = await db.get(
-      "SELECT id, username, phone_number, created_at, last_login FROM users WHERE id = ?",
-      [userId],
-    );
+    // 1. Verify admin status first
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", req.user.phoneNumber)
+      .single();
 
-    if (!user) {
+    if (adminError || !adminData || !adminData.is_admin) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+
+    // 2. Get base user info
+    const { data: user, error: userError } = await supabase
+      .from("profiles")
+      .select("id, username, phone_number, created_at")
+      .eq("id", userId)
+      .single();
+
+    if (userError || !user) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
 
-    // 2. Get their contacts
-    const contacts = await db.all(
-      `
-            SELECT u.id, u.username, u.phone_number 
-            FROM contacts c 
-            JOIN users u ON c.contact_id = u.id 
-            WHERE c.user_id = ?
-        `,
-      [userId],
-    );
+    // 3. Get their contacts (Adjusted for Supabase joins if you have a contacts table)
+    // If you don't have a specific contacts table yet, this will safely return an empty array
+    const { data: contacts, error: contactsError } = await supabase
+      .from("contacts")
+      .select(
+        "contact_id, profiles!contacts_contact_id_fkey(username, phone_number)",
+      )
+      .eq("user_id", userId);
 
-    // 3. Get message stats (SQLite date math example)
-    const msgsToday = await db.get(
-      `SELECT COUNT(*) as count FROM messages WHERE sender_id = ? AND created_at >= date('now')`,
-      [userId],
-    );
-    const msgsWeek = await db.get(
-      `SELECT COUNT(*) as count FROM messages WHERE sender_id = ? AND created_at >= date('now', '-7 days')`,
-      [userId],
-    );
-    const msgsMonth = await db.get(
-      `SELECT COUNT(*) as count FROM messages WHERE sender_id = ? AND created_at >= date('now', '-30 days')`,
-      [userId],
-    );
+    let formattedContacts = [];
+    if (contacts && !contactsError) {
+      formattedContacts = contacts.map((c) => ({
+        username: c.profiles?.username || "Unknown",
+        phone_number: c.profiles?.phone_number || "",
+      }));
+    }
+
+    // 4. Get message stats (Optional: If you have a messages table)
+    // Note: Counting large tables can be slow, but here is a simple Supabase approach:
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const { count: msgsToday } = await supabase
+      .from("messages")
+      .select("*", { count: "exact", head: true })
+      .eq("sender_id", userId)
+      .gte("created_at", today.toISOString());
 
     res.json({
       success: true,
       user: user,
-      contacts: contacts || [],
+      contacts: formattedContacts,
       stats: {
-        today: msgsToday ? msgsToday.count : 0,
-        week: msgsWeek ? msgsWeek.count : 0,
-        month: msgsMonth ? msgsMonth.count : 0,
+        today: msgsToday || 0,
+        week: 0, // You can expand these counts later!
+        month: 0,
       },
     });
   } catch (error) {
