@@ -266,18 +266,24 @@ app.get("/admin/online", authenticateToken, async (req, res) => {
   if (req.user.number !== ADMIN_NUMBER) return res.sendStatus(403);
 
   const onlineUsers = [];
-  // We map through connected sockets to find the users and their specific status
-  for (const [userId, socket] of io.sockets.sockets) {
-    if (socket.userNumber) {
-      onlineUsers.push({
-        id: socket.id,
-        phone_number: socket.userNumber,
-        username: socket.username || "Unknown",
-        // Pull the status from our global userStatuses object
-        status: userStatuses[socket.userNumber] || "active" 
-      });
-    }
+  
+  // Map through ALL connected sockets
+  for (const [socketId, socket] of io.sockets.sockets) {
+    // Check multiple common ways you might be saving the user's info to the socket
+    const phone = socket.userNumber || socket.number || socket.userId || "Unknown Connection";
+    const name = socket.username || socket.name || "Anonymous";
+    
+    // Pull the status from our global userStatuses object (if it exists)
+    const currentStatus = userStatuses[phone] || "active";
+
+    onlineUsers.push({
+      id: socketId,
+      phone_number: phone,
+      username: name,
+      status: currentStatus 
+    });
   }
+  
   res.json(onlineUsers);
 });
 // --- SUPABASE & PUSH SETUP ---
