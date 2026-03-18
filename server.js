@@ -56,16 +56,19 @@ const io = new Server(server, {
 // GET SETTINGS
 app.get("/settings/:myNumber", authenticateToken, async (req, res) => {
   try {
-    if (req.user.phoneNumber !== req.params.myNumber)
-      return res.sendStatus(403);
+    if (req.user.phoneNumber !== req.params.myNumber) return res.sendStatus(403);
+    
+    // .limit(1) safely grabs the first match without crashing if there are duplicates
     const { data, error } = await supabase
       .from("profiles")
       .select("is_dark, accent, is_pattern")
       .eq("phone_number", req.params.myNumber)
-      .single();
+      .limit(1); 
+
     if (error) throw error;
-    res.json(data);
+    res.json(data && data.length > 0 ? data[0] : {});
   } catch (error) {
+    console.error("Settings GET Error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -78,10 +81,11 @@ app.post("/settings/update", authenticateToken, async (req, res) => {
       .from("profiles")
       .update({ is_dark: isDark, accent: accent, is_pattern: isPattern })
       .eq("phone_number", req.user.phoneNumber);
-
+    
     if (error) throw error;
     res.json({ success: true });
   } catch (error) {
+    console.error("Settings POST Error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
