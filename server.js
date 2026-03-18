@@ -457,7 +457,7 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
         `sender_number.eq.${req.params.myNumber},receiver_number.eq.${req.params.myNumber}`,
       )
       .order("timestamp", { ascending: false }) // Get NEWEST messages first
-      .limit(10000); // Grab the recent 500
+      .limit(150); // <-- CHANGED: Only load enough for contact list previews
     if (error) throw error;
     res.json(data.reverse());
   } catch (error) {
