@@ -852,15 +852,13 @@ app.post("/admin/api/ban", authenticateToken, async (req, res) => {
     }
 
     // 4. Insert into Supabase
-    const { data, error } = await supabase
-      .from("bans")
-      .insert({
-        phone_number: targetNumber,
-        ban_types: types, // Stored safely as JSONB
-        reason: reason,
-        expires_at: expiresAt,
-        created_at: new Date().toISOString() // <-- Added this!
-      });
+    const { data, error } = await supabase.from("bans").insert({
+      phone_number: targetNumber,
+      ban_types: types, // Stored safely as JSONB
+      reason: reason,
+      expires_at: expiresAt,
+      created_at: new Date().toISOString(), // <-- Added this!
+    });
 
     if (error) {
       console.error("Supabase Ban Error:", error);
@@ -912,69 +910,52 @@ app.get(
 );
 // 5. CONTACTS ADD
 
-app.post("/contacts/add", authenticateToken, async (req, res) => {
+app.post("/admin/api/ban", authenticateToken, async (req, res) => {
   try {
-    const { ownerNumber, contactNumber, nickname } = req.body;
+    // FIX: Grab the admin number from the body (which we added to the frontend)
+    // or fallback to possible token properties.
+    const adminPhone =
+      req.body.adminNumber || req.user?.phoneNumber || req.user?.number;
 
-    if (req.user.phoneNumber !== ownerNumber) return res.sendStatus(403);
+    if (!adminPhone) {
+      return res
+        .status(400)
+        .json({ error: "Could not identify admin number from request." });
+    }
 
-    // 1. Verify the contact exists
-    const { data: contactUser, error: contactError } = await supabase
-      .from("profiles")
-      .select("username")
-      .eq("phone_number", contactNumber)
+    // Verify admin calling the route
+    const { data: adminCheck } = await supabase
+      .from("admins")
+      .select("*")
+      .eq("phone_number", adminPhone)
       .single();
 
-    if (contactError || !contactUser) {
-      return res.status(404).json({ error: "User ID not found" });
+    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+
+    const { targetNumber, types, reason, days } = req.body;
+
+    let expiresAt = null;
+    if (days !== -1) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + days);
+      expiresAt = expiresAt.toISOString();
     }
 
-    // 2. Get owner's info
-    const { data: ownerUser } = await supabase
-      .from("profiles")
-      .select("username")
-      .eq("phone_number", ownerNumber)
-      .single();
+    const { error } = await supabase.from("bans").insert({
+      phone_number: targetNumber,
+      types: types,
+      reason: reason,
+      expires_at: expiresAt,
+    });
 
-    // 3. Add to Owner's contact list
-    const { error: insertError1 } = await supabase.from("contacts").upsert(
-      {
-        owner_number: ownerNumber,
-        contact_number: contactNumber,
-        nickname: safeClean(nickname), // Changed from custom_name to nickname based on ensureContactExists
-      },
-      { onConflict: "owner_number, contact_number" },
-    );
+    if (error) throw error;
 
-    if (insertError1) {
-      console.error("Insert Error 1:", insertError1);
-      throw new Error("Database error adding contact.");
-    }
-
-    // 4. Add to Contact's list (so they can see who added them)
-    const { error: insertError2 } = await supabase.from("contacts").upsert(
-      {
-        owner_number: contactNumber,
-        contact_number: ownerNumber,
-        nickname: ownerUser ? ownerUser.username : "New Contact", // Changed from custom_name
-      },
-      { onConflict: "owner_number, contact_number" },
-    );
-
-    if (insertError2) {
-      console.error("Insert Error 2:", insertError2);
-      // We don't throw here, as the primary add succeeded. Just log it.
-    }
-
-    // 5. Notify the contact via socket
-    const contactSocketId = onlineUsers.get(contactNumber);
-    if (contactSocketId) {
-      io.to(contactSocketId).emit("refresh_contacts");
-    }
+    // Instantly force-kick the user via Socket.IO if they are logged in right now
+    io.emit("user_banned", { targetNumber, types, reason });
 
     res.json({ success: true });
   } catch (error) {
-    console.error("/contacts/add Route Error:", error);
+    console.error("Ban Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
