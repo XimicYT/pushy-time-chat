@@ -242,7 +242,19 @@ async function ensureContactExists(owner, contact, defaultName) {
 
 // 1. HEALTH CHECK
 app.get("/", (req, res) => res.json({ status: "online" }));
+// --- ADMIN ROUTES ---
 
+// Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
+const ADMIN_NUMBERS = ["321777"]; 
+
+app.get("/admin/verify", authenticateToken, (req, res) => {
+  // req.user is set by your authenticateToken middleware
+  if (ADMIN_NUMBERS.includes(req.user.number)) {
+    res.json({ authorized: true });
+  } else {
+    res.status(403).json({ error: "Unauthorized: Not an admin" });
+  }
+});
 // 2. REGISTER
 app.post("/register", async (req, res) => {
   try {
