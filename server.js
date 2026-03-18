@@ -245,11 +245,12 @@ app.get("/", (req, res) => res.json({ status: "online" }));
 // --- ADMIN ROUTES ---
 
 // Define who is allowed to access the admin page (Replace with your actual admin phone numbers/IDs)
-const ADMIN_NUMBERS = ["321777"]; 
+const ADMIN_NUMBERS = ["321777"];
 
 app.get("/admin/verify", authenticateToken, (req, res) => {
   // req.user is set by your authenticateToken middleware
-  if (ADMIN_NUMBERS.includes(req.user.number)) {
+  if (ADMIN_NUMBERS.includes(req.user.phoneNumber)) {
+    // <-- Fix is here
     res.json({ authorized: true });
   } else {
     res.status(403).json({ error: "Unauthorized: Not an admin" });
