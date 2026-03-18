@@ -77,17 +77,37 @@ app.get("/settings/:myNumber", authenticateToken, async (req, res) => {
 // UPDATE SETTINGS
 app.post("/settings/update", authenticateToken, async (req, res) => {
   try {
-    const { isDark, accent, isPattern } = req.body;
-    const { error } = await supabase
-      .from("profiles")
-      .update({ is_dark: isDark, accent: accent, is_pattern: isPattern })
-      .eq("phone_number", req.user.phoneNumber);
+    const { phoneNumber, isDark, accent, isPattern } = req.body;
 
-    if (error) throw error;
+    if (!phoneNumber) {
+      return res.status(400).json({ error: "Missing phone number" });
+    }
+
+    // UPSERT: Inserts a new row if the phone number doesn't exist,
+    // or updates the existing row if it does.
+    const { data, error } = await supabase
+      .from("users") // <-- Make sure this matches your DB table name
+      .upsert(
+        {
+          phone_number: phoneNumber, // <-- Primary key / Conflict column
+          is_dark: isDark,
+          accent: accent,
+          is_pattern: isPattern,
+        },
+        { onConflict: "phone_number" },
+      ); // <-- Tells Supabase what column to check for duplicates
+
+    if (error) {
+      console.error("Supabase Upsert Error:", error);
+      throw error;
+    }
+
     res.json({ success: true });
-  } catch (error) {
-    console.error("Settings POST Error:", error.message);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error("Settings Route Error:", err);
+    res
+      .status(500)
+      .json({ error: err.message || "Server Error saving settings" });
   }
 });
 const onlineUsers = new Map(); // Maps PhoneNumber -> SocketID
