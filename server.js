@@ -30,6 +30,8 @@ app.use(limiter);
 const JWT_SECRET =
   process.env.JWT_SECRET || "fallback_secret_please_change_in_env";
 
+const ADMIN_NUMBER = process.env.ADMIN_NUMBER || "321777"; // e.g., "1234567890"
+
 // --- CLOUDINARY CONFIG ---
 if (process.env.CLOUDINARY_CLOUD_NAME) {
   cloudinary.config({
