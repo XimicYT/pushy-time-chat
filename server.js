@@ -849,43 +849,56 @@ app.get("/messages/:myNumber", authenticateToken, async (req, res) => {
 // --- ADMIN: BAN USER ROUTE ---
 app.post("/admin/api/ban", authenticateToken, async (req, res) => {
   try {
+    const adminPhone = req.body.adminNumber || req.user?.phoneNumber || req.user?.number;
+
+    if (!adminPhone) {
+      return res.status(400).json({ error: "Missing admin phone number." });
+    }
+
+    // FIX: Look in 'profiles' table and select 'is_admin' instead of looking for an 'admins' table
+    const { data: adminCheck, error: dbErr } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", adminPhone);
+
+    if (dbErr) {
+      return res.status(500).json({ error: "Supabase DB Error: " + dbErr.message });
+    }
+
+    // If the array is empty (number not found) OR the user is NOT an admin
+    if (!adminCheck || adminCheck.length === 0 || adminCheck[0].is_admin !== true) {
+      return res.status(403).json({ 
+        error: "Unauthorized: You do not have admin privileges." 
+      });
+    }
+
+    // --- The actual ban logic ---
     const { targetNumber, types, reason, days } = req.body;
 
-    // 1. Basic Validation
-    if (!targetNumber || !types || types.length === 0) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    // 2. Optional: Verify the person making this request is actually an admin!
-    // If you have an admin verification function, use it here to prevent abuse.
-
-    // 3. Calculate Expiration Date
-    let expiresAt = null; // null means forever
+    let expiresAt = null;
     if (days !== -1) {
-      const date = new Date();
-      date.setDate(date.getDate() + days); // Add the specified number of days to today
-      expiresAt = date.toISOString();
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + days);
+      expiresAt = expiresAt.toISOString();
     }
 
-    // 4. Insert into Supabase
-    const { data, error } = await supabase.from("bans").insert({
+    const { error: insertErr } = await supabase.from("bans").insert({
       phone_number: targetNumber,
-      ban_types: types, // Stored safely as JSONB
+      types: types,
       reason: reason,
       expires_at: expiresAt,
-      created_at: new Date().toISOString(), // <-- Added this!
     });
 
-    if (error) {
-      console.error("Supabase Ban Error:", error);
-      return res.status(500).json({ error: "Database failed to ban user" });
+    if (insertErr) {
+        return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
     }
 
-    // 5. Success
-    res.json({ success: true, message: "User banned successfully." });
-  } catch (err) {
-    console.error("Ban API Catch Error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    io.emit("user_banned", { targetNumber, types, reason });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Ban Error:", error);
+    res.status(500).json({ error: "Server Catch: " + error.message });
   }
 });
 // NEW ROUTE: Get Paginated Messages for a SPECIFIC Chat
