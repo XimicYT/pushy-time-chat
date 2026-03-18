@@ -223,6 +223,62 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch user list." });
   }
 });
+// GET Detailed User Profile for Admin
+app.get("/admin/api/user/:id", async (req, res) => {
+  // Make sure you add your admin authentication middleware here!
+  const userId = req.params.id;
+
+  try {
+    // 1. Get base user info (Adjust query to match your DB)
+    const user = await db.get(
+      "SELECT id, username, phone_number, created_at, last_login FROM users WHERE id = ?",
+      [userId],
+    );
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    // 2. Get their contacts
+    const contacts = await db.all(
+      `
+            SELECT u.id, u.username, u.phone_number 
+            FROM contacts c 
+            JOIN users u ON c.contact_id = u.id 
+            WHERE c.user_id = ?
+        `,
+      [userId],
+    );
+
+    // 3. Get message stats (SQLite date math example)
+    const msgsToday = await db.get(
+      `SELECT COUNT(*) as count FROM messages WHERE sender_id = ? AND created_at >= date('now')`,
+      [userId],
+    );
+    const msgsWeek = await db.get(
+      `SELECT COUNT(*) as count FROM messages WHERE sender_id = ? AND created_at >= date('now', '-7 days')`,
+      [userId],
+    );
+    const msgsMonth = await db.get(
+      `SELECT COUNT(*) as count FROM messages WHERE sender_id = ? AND created_at >= date('now', '-30 days')`,
+      [userId],
+    );
+
+    res.json({
+      success: true,
+      user: user,
+      contacts: contacts || [],
+      stats: {
+        today: msgsToday ? msgsToday.count : 0,
+        week: msgsWeek ? msgsWeek.count : 0,
+        month: msgsMonth ? msgsMonth.count : 0,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching detailed user stats:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
 // 3. Get Dashboard Analytics
 app.get("/admin/stats", authenticateToken, async (req, res) => {
   try {
