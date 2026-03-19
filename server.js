@@ -1277,26 +1277,37 @@ app.post("/global/send", authenticateToken, async (req, res) => {
 // --- ADMIN GLOBAL CHAT MANAGEMENT ---
 
 // Delete a single message
-app.delete("/admin/global/message/:id", requireAuth, async (req, res) => {
+// --- ADMIN GLOBAL CHAT MANAGEMENT ---
+
+// Delete a single message
+app.delete("/admin/global/message/:id", async (req, res) => {
   try {
-    // Verify admin status
-    const adminCheck = await isAdmin(req.user.number);
+    // 1. Manually verify the user's token
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: "No token provided" });
+    
+    // Decode the token to get the user's number
+    const user = jwt.verify(token, JWT_SECRET);
+
+    // 2. Verify admin status using the decoded number
+    const adminCheck = await isAdmin(user.number);
     if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
 
     const msgId = req.params.id;
     // Find the message in the global array
     const msg = globalMessages.find((m) => m.id === msgId);
-
+    
     if (msg) {
       // Modify the message object directly in memory
       msg.body = "an admin has deleted this message";
-      msg.isDeleted = true;
+      msg.isDeleted = true; 
       msg.type = "text"; // Force it to text in case it was an image
 
       // Tell all connected clients to update their UI live
       io.emit("global_message_deleted", msgId);
     }
-
+    
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1304,17 +1315,25 @@ app.delete("/admin/global/message/:id", requireAuth, async (req, res) => {
 });
 
 // Clear all global messages
-app.delete("/admin/global/clear", requireAuth, async (req, res) => {
+app.delete("/admin/global/clear", async (req, res) => {
   try {
-    const adminCheck = await isAdmin(req.user.number);
+    // 1. Manually verify the user's token
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: "No token provided" });
+    
+    const user = jwt.verify(token, JWT_SECRET);
+
+    // 2. Verify admin status
+    const adminCheck = await isAdmin(user.number);
     if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
 
     // Empty the array
     globalMessages.length = 0;
-
+    
     // Tell all clients the chat was wiped
     io.emit("global_chat_cleared");
-
+    
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
