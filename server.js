@@ -320,6 +320,41 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch user list." });
   }
 });
+// --- GET ALL ACTIVE BANS ---
+app.get("/admin/bans", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    // 1. Fetch all bans
+    const { data: bans, error: bansError } = await supabase.from("bans").select("*");
+    if (bansError) throw bansError;
+
+    if (!bans || bans.length === 0) return res.json([]);
+
+    // 2. Fetch profiles to attach usernames
+    const phoneNumbers = bans.map((b) => b.phone_number);
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("phone_number, username")
+      .in("phone_number", phoneNumbers);
+
+    const profileMap = {};
+    if (profiles) {
+      profiles.forEach((p) => {
+        profileMap[p.phone_number] = p.username;
+      });
+    }
+
+    // 3. Attach usernames to the ban records
+    const enrichedBans = bans.map((b) => ({
+      ...b,
+      username: profileMap[b.phone_number] || "Unknown",
+    }));
+
+    res.json(enrichedBans);
+  } catch (err) {
+    console.error("Fetch Bans Error:", err);
+    res.status(500).json({ error: "Failed to fetch active bans." });
+  }
+});
 // GET Detailed User Profile for Admin
 app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
   const userId = req.params.id;
