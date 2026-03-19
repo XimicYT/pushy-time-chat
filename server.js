@@ -895,16 +895,38 @@ app.post("/send-message", authenticateToken, async (req, res) => {
   }
 });
 // --- NEW: CHECK BANS ON PAGE LOAD ---
+// --- NEW: CHECK BANS ON PAGE LOAD ---
 app.get("/check-bans", authenticateToken, async (req, res) => {
   try {
-    // Get the securely verified number from the token
     const secureNumber = req.user.phoneNumber || req.user.number;
 
-    // Fetch their active bans
-    const activeBans = await getActiveBans(secureNumber);
+    // Fetch the raw row so we can get both the types AND the reason
+    const { data: banData } = await supabase
+      .from("bans")
+      .select("ban_types, reason, expires_at")
+      .eq("phone_number", secureNumber)
+      .single();
 
-    // Send the array of bans back to the frontend
-    res.json({ bans: activeBans });
+    let activeBans = [];
+    let reason = "Violation of the rules.";
+
+    if (banData) {
+      const now = new Date();
+      // Check if ban is permanent OR hasn't expired yet
+      if (!banData.expires_at || new Date(banData.expires_at) > now) {
+        reason = banData.reason || reason; // Overwrite with actual reason from DB
+
+        if (banData.ban_types) {
+          const typeString = JSON.stringify(banData.ban_types).toLowerCase();
+          if (typeString.includes("login")) activeBans.push("login");
+          if (typeString.includes("global")) activeBans.push("global");
+          if (typeString.includes("private")) activeBans.push("private");
+        }
+      }
+    }
+
+    // Send BOTH back to the frontend
+    res.json({ bans: activeBans, reason: reason });
   } catch (e) {
     console.error("Failed to check bans:", e);
     res.status(500).json({ error: "Failed to check bans" });
@@ -970,7 +992,62 @@ app.get(
   },
 );
 // 5. CONTACTS ADD
+// 5. CONTACTS ADD
+app.post("/contacts/add", authenticateToken, async (req, res) => {
+  try {
+    const { ownerNumber, contactNumber, nickname } = req.body;
 
+    if (!ownerNumber || !contactNumber) {
+      return res.status(400).json({ error: "Missing required numbers." });
+    }
+
+    // 1. Verify that the person they are trying to add actually has an account
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("username")
+      .eq("phone_number", contactNumber)
+      .single();
+
+    if (!profile) {
+      return res
+        .status(404)
+        .json({ error: "No user found with that phone number." });
+    }
+
+    // 2. Prevent adding duplicates
+    const { data: existingContact } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("owner_number", ownerNumber)
+      .eq("contact_number", contactNumber)
+      .single();
+
+    if (existingContact) {
+      return res
+        .status(400)
+        .json({ error: "This person is already in your contacts." });
+    }
+
+    // 3. Add the contact!
+    const { data, error } = await supabase
+      .from("contacts")
+      .insert({
+        owner_number: ownerNumber,
+        contact_number: contactNumber,
+        nickname: nickname || profile.username || "New Contact",
+        is_favorite: false,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({ success: true, contact: data });
+  } catch (error) {
+    console.error("Add Contact Error:", error);
+    res.status(500).json({ error: "Failed to add contact: " + error.message });
+  }
+});
 // GET CONTACTS
 app.get("/contacts/:myNumber", authenticateToken, async (req, res) => {
   try {
