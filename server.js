@@ -280,7 +280,7 @@ app.get("/admin/verify", authenticateToken, async (req, res) => {
       // Change 'phone_number' to 'id' if you use UUIDs to look up users
       .eq("phone_number", userIdentifier)
       .single();
-
+    
     if (error || !data || data.is_admin !== true) {
       return res.status(403).json({ error: "Server rejected admin access." });
     }
@@ -389,7 +389,10 @@ app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
         .eq("sender_number", userPhone)
         .gte("timestamp", monthStr), // FIXED: created_at -> timestamp
     ]);
-
+    const { data: bansData } = await supabase
+  .from("bans")
+  .select("ban_types, reason, expires_at")
+  .eq("phone_number", userPhone);
     res.json({
       success: true,
       user: {
@@ -398,6 +401,7 @@ app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
         phone_number: user.phone_number,
         created_at: user.created_at,
         last_online: user.last_online || null, // FIXED: Now using last_online!
+        bans: bansData || [],
       },
       contacts: contacts || [],
       stats: {
@@ -896,37 +900,32 @@ app.post("/send-message", authenticateToken, async (req, res) => {
 });
 // --- NEW: CHECK BANS ON PAGE LOAD ---
 // --- NEW: CHECK BANS ON PAGE LOAD ---
+// Inside server.js
 app.get("/check-bans", authenticateToken, async (req, res) => {
   try {
-    const secureNumber = req.user.phoneNumber || req.user.number;
-
-    // Fetch the raw row so we can get both the types AND the reason
-    const { data: banData } = await supabase
+    const { data: bans, error } = await supabase
       .from("bans")
-      .select("ban_types, reason, expires_at")
-      .eq("phone_number", secureNumber)
-      .single();
+      .select("ban_types, expires_at, reason")
+      .eq("phone_number", req.user.phoneNumber);
 
     let activeBans = [];
-    let reason = "Violation of the rules.";
+    let reason = "Violation of rules.";
+    let allBanDetails = []; // NEW: Store full details
 
-    if (banData) {
+    if (!error && bans && bans.length > 0) {
       const now = new Date();
-      // Check if ban is permanent OR hasn't expired yet
-      if (!banData.expires_at || new Date(banData.expires_at) > now) {
-        reason = banData.reason || reason; // Overwrite with actual reason from DB
-
-        if (banData.ban_types) {
-          const typeString = JSON.stringify(banData.ban_types).toLowerCase();
-          if (typeString.includes("login")) activeBans.push("login");
-          if (typeString.includes("global")) activeBans.push("global");
-          if (typeString.includes("private")) activeBans.push("private");
+      bans.forEach((ban) => {
+        // Only include active bans
+        if (!ban.expires_at || new Date(ban.expires_at) > now) {
+          if (ban.ban_types) activeBans.push(...ban.ban_types);
+          if (ban.reason) reason = ban.reason;
+          allBanDetails.push(ban);
         }
-      }
+      });
     }
 
-    // Send BOTH back to the frontend
-    res.json({ bans: activeBans, reason: reason });
+    // Return the detailed objects as well
+    res.json({ bans: activeBans, reason: reason, details: allBanDetails });
   } catch (e) {
     console.error("Failed to check bans:", e);
     res.status(500).json({ error: "Failed to check bans" });
