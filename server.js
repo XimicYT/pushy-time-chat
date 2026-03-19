@@ -1340,5 +1340,35 @@ app.post("/admin/global/clear", authenticateToken, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// --- ADMIN SERVER ANNOUNCEMENTS ---
+
+app.post("/admin/announce", authenticateToken, async (req, res) => {
+  try {
+    // 1. Verify admin status
+    const userIdentifier = req.user.phoneNumber || req.user.number; 
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", userIdentifier)
+      .single();
+
+    if (adminError || !adminData || adminData.is_admin !== true) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // 2. Validate the message
+    const { message } = req.body;
+    if (!message || message.trim() === "" || message.length > 500) {
+        return res.status(400).json({ error: "Invalid announcement length. Max 500 characters." });
+    }
+
+    // 3. Broadcast to EVERY connected user via Socket.io
+    io.emit("server_announcement", message.trim());
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
