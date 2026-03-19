@@ -1282,16 +1282,24 @@ app.post("/global/send", authenticateToken, async (req, res) => {
 // --- ADMIN GLOBAL CHAT MANAGEMENT ---
 
 // Delete a single message (Changed to POST to bypass CORS blocking)
-app.post("/admin/global/message/:id", async (req, res) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: "No token provided" });
-    
-    const user = jwt.verify(token, JWT_SECRET);
-    const adminCheck = await isAdmin(user.number);
-    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+// --- ADMIN GLOBAL CHAT MANAGEMENT ---
 
+// Delete a single message
+app.post("/admin/global/message/:id", authenticateToken, async (req, res) => {
+  try {
+    // 1. Verify admin status using your exact Supabase logic
+    const userIdentifier = req.user.phoneNumber || req.user.number; 
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", userIdentifier)
+      .single();
+
+    if (adminError || !adminData || adminData.is_admin !== true) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // 2. Perform the deletion
     const msgId = req.params.id;
     const msg = globalMessages.find((m) => m.id === msgId);
     
@@ -1308,17 +1316,22 @@ app.post("/admin/global/message/:id", async (req, res) => {
   }
 });
 
-// Clear all global messages (Changed to POST)
-app.post("/admin/global/clear", async (req, res) => {
+// Clear all global messages
+app.post("/admin/global/clear", authenticateToken, async (req, res) => {
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: "No token provided" });
-    
-    const user = jwt.verify(token, JWT_SECRET);
-    const adminCheck = await isAdmin(user.number);
-    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+    // 1. Verify admin status using your exact Supabase logic
+    const userIdentifier = req.user.phoneNumber || req.user.number; 
+    const { data: adminData, error: adminError } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("phone_number", userIdentifier)
+      .single();
 
+    if (adminError || !adminData || adminData.is_admin !== true) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // 2. Clear the array
     globalMessages.length = 0;
     io.emit("global_chat_cleared");
     
