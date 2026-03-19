@@ -280,7 +280,7 @@ app.get("/admin/verify", authenticateToken, async (req, res) => {
       // Change 'phone_number' to 'id' if you use UUIDs to look up users
       .eq("phone_number", userIdentifier)
       .single();
-    
+
     if (error || !data || data.is_admin !== true) {
       return res.status(403).json({ error: "Server rejected admin access." });
     }
@@ -324,7 +324,9 @@ app.get("/admin/users", authenticateToken, async (req, res) => {
 app.get("/admin/bans", authenticateToken, requireAdmin, async (req, res) => {
   try {
     // 1. Fetch all bans
-    const { data: bans, error: bansError } = await supabase.from("bans").select("*");
+    const { data: bans, error: bansError } = await supabase
+      .from("bans")
+      .select("*");
     if (bansError) throw bansError;
 
     if (!bans || bans.length === 0) return res.json([]);
@@ -425,9 +427,9 @@ app.get("/admin/api/user/:id", authenticateToken, async (req, res) => {
         .gte("timestamp", monthStr), // FIXED: created_at -> timestamp
     ]);
     const { data: bansData } = await supabase
-  .from("bans")
-  .select("ban_types, reason, expires_at")
-  .eq("phone_number", userPhone);
+      .from("bans")
+      .select("ban_types, reason, expires_at")
+      .eq("phone_number", userPhone);
     res.json({
       success: true,
       user: {
@@ -1270,6 +1272,52 @@ app.post("/global/send", authenticateToken, async (req, res) => {
   } catch (e) {
     console.error("Global Chat Error:", e);
     res.status(500).json({ error: "Failed to send global message" });
+  }
+});
+// --- ADMIN GLOBAL CHAT MANAGEMENT ---
+
+// Delete a single message
+app.delete("/admin/global/message/:id", requireAuth, async (req, res) => {
+  try {
+    // Verify admin status
+    const adminCheck = await isAdmin(req.user.number);
+    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+
+    const msgId = req.params.id;
+    // Find the message in the global array
+    const msg = globalMessages.find((m) => m.id === msgId);
+
+    if (msg) {
+      // Modify the message object directly in memory
+      msg.body = "an admin has deleted this message";
+      msg.isDeleted = true;
+      msg.type = "text"; // Force it to text in case it was an image
+
+      // Tell all connected clients to update their UI live
+      io.emit("global_message_deleted", msgId);
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Clear all global messages
+app.delete("/admin/global/clear", requireAuth, async (req, res) => {
+  try {
+    const adminCheck = await isAdmin(req.user.number);
+    if (!adminCheck) return res.status(403).json({ error: "Unauthorized" });
+
+    // Empty the array
+    globalMessages.length = 0;
+
+    // Tell all clients the chat was wiped
+    io.emit("global_chat_cleared");
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 const PORT = process.env.PORT || 3000;
