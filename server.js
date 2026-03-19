@@ -194,63 +194,80 @@ const ADMIN_NUMBERS = ["321777"];
 
 // --- ADMIN ROUTES ---
 // --- ADMIN: BAN USER ROUTE ---
-app.post("/admin/api/ban", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { targetNumber, types, reason, days } = req.body;
+app.post(
+  "/admin/api/ban",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { targetNumber, types, reason, days } = req.body;
 
-    // 1. DELETE any existing bans for this user. 
-    // This prevents duplicate bans and allows us to seamlessly "overwrite" 
-    // their ban to extend, shorten, or change the ban types.
-    await supabase.from("bans").delete().eq("phone_number", targetNumber);
+      // --- NEW: Block bans against admins ---
+      if (ADMIN_NUMBERS.includes(targetNumber)) {
+        return res
+          .status(403)
+          .json({ error: "Action Denied: Admins cannot be banned." });
+      }
 
-    // 2. CHECK FOR UNBAN
-    // If you send an empty array of types, or set days to 0, it acts as a full unban!
-    if (!types || types.length === 0 || days === 0) {
-      return res.json({ success: true, message: "User unbanned successfully." });
-    }
+      // 1. DELETE any existing bans for this user.
+      // This prevents duplicate bans and allows us to seamlessly "overwrite"
+      // their ban to extend, shorten, or change the ban types.
+      await supabase.from("bans").delete().eq("phone_number", targetNumber);
 
-    // 3. CALCULATE EXPIRATION
-    let expiresAt = null;
-    if (days !== -1) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + days);
-      expiresAt = expiresAt.toISOString();
-    }
+      // 2. CHECK FOR UNBAN
+      // If you send an empty array of types, or set days to 0, it acts as a full unban!
+      if (!types || types.length === 0 || days === 0) {
+        return res.json({
+          success: true,
+          message: "User unbanned successfully.",
+        });
+      }
 
-    // 4. INSERT THE NEW BAN
-    const { error: insertErr } = await supabase.from("bans").insert({
-      phone_number: targetNumber,
-      ban_types: types,
-      reason: reason,
-      expires_at: expiresAt,
-    });
+      // 3. CALCULATE EXPIRATION
+      let expiresAt = null;
+      if (days !== -1) {
+        expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + days);
+        expiresAt = expiresAt.toISOString();
+      }
 
-    if (insertErr) {
-        return res.status(500).json({ error: "Insert Ban Error: " + insertErr.message });
-    }
+      // 4. INSERT THE NEW BAN
+      const { error: insertErr } = await supabase.from("bans").insert({
+        phone_number: targetNumber,
+        ban_types: types,
+        reason: reason,
+        expires_at: expiresAt,
+      });
 
-    // 5. REAL-TIME ENFORCEMENT
-    // Find if the user is currently online and connected to the socket
-    const targetSocketId = onlineUsers.get(targetNumber);
-    if (targetSocketId) {
-      const targetSocket = io.sockets.sockets.get(targetSocketId);
-      if (targetSocket) {
-        // Send a direct event to that specific user's device
-        targetSocket.emit("user_banned_event", { types, reason });
-        
-        // If it's a login/app ban, forcefully sever their server connection right now
-        if (types.includes("login")) {
-          targetSocket.disconnect(true);
+      if (insertErr) {
+        return res
+          .status(500)
+          .json({ error: "Insert Ban Error: " + insertErr.message });
+      }
+
+      // 5. REAL-TIME ENFORCEMENT
+      // Find if the user is currently online and connected to the socket
+      const targetSocketId = onlineUsers.get(targetNumber);
+      if (targetSocketId) {
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        if (targetSocket) {
+          // Send a direct event to that specific user's device
+          targetSocket.emit("user_banned_event", { types, reason });
+
+          // If it's a login/app ban, forcefully sever their server connection right now
+          if (types.includes("login")) {
+            targetSocket.disconnect(true);
+          }
         }
       }
-    }
 
-    res.json({ success: true, message: "Ban updated successfully." });
-  } catch (error) {
-    console.error("Ban Error:", error);
-    res.status(500).json({ error: "Server Catch: " + error.message });
-  }
-});
+      res.json({ success: true, message: "Ban updated successfully." });
+    } catch (error) {
+      console.error("Ban Error:", error);
+      res.status(500).json({ error: "Server Catch: " + error.message });
+    }
+  },
+);
 // 1. Verify Admin Status
 app.get("/admin/verify", authenticateToken, async (req, res) => {
   try {
@@ -605,7 +622,7 @@ async function getActiveBans(phoneNumber) {
         if (ban.ban_types) {
           // Bulletproof extraction: Whether it's an Array or a Postgres String "{login, global}"
           const typeString = JSON.stringify(ban.ban_types).toLowerCase();
-          
+
           if (typeString.includes("login")) activeTypes.add("login");
           if (typeString.includes("global")) activeTypes.add("global");
           if (typeString.includes("private")) activeTypes.add("private");
@@ -617,7 +634,7 @@ async function getActiveBans(phoneNumber) {
   } catch (err) {
     console.error("Fatal error in getActiveBans:", err);
     // If something horribly breaks, assume they are NOT allowed as a safety measure
-    return ["login", "global", "private"]; 
+    return ["login", "global", "private"];
   }
 }
 // 2. REGISTER
@@ -882,10 +899,10 @@ app.get("/check-bans", authenticateToken, async (req, res) => {
   try {
     // Get the securely verified number from the token
     const secureNumber = req.user.phoneNumber || req.user.number;
-    
+
     // Fetch their active bans
     const activeBans = await getActiveBans(secureNumber);
-    
+
     // Send the array of bans back to the frontend
     res.json({ bans: activeBans });
   } catch (e) {
